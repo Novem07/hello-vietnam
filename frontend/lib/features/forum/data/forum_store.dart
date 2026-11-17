@@ -1,0 +1,855 @@
+import 'dart:async';
+
+import 'package:flutter/foundation.dart';
+import 'package:hellovietnam/features/loyalty/data/loyalty_award_service.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+
+import '../domain/create_forum_post_request.dart';
+import '../domain/forum_models.dart';
+import 'forum_page_cursor.dart';
+import 'forum_repository.dart';
+
+class ForumStore extends ChangeNotifier {
+  ForumStore._({ForumRepository? repository})
+    : _repository = repository ?? ForumRepository();
+
+  @visibleForTesting
+  ForumStore.test({required ForumRepository repository})
+    : _repository = repository;
+
+  static final ForumStore instance = ForumStore._();
+
+  final ForumRepository _repository;
+
+  final Map<String, ForumUserProfile> _profilesById =
+      <String, ForumUserProfile>{};
+  final Map<String, ForumPost> _postsById = <String, ForumPost>{};
+  final Map<String, List<ForumComment>> _commentsByPostId =
+      <String, List<ForumComment>>{};
+  final Map<String, ForumPageCursor?> _nextCommentCursorByPostId =
+      <String, ForumPageCursor?>{};
+  final Map<String, bool> _hasMoreCommentsByPostId = <String, bool>{};
+  final Map<String, String> _commentErrorsByPostId = <String, String>{};
+  final Set<String> _loadedCommentPostIds = <String>{};
+  final Set<String> _loadingInitialCommentPostIds = <String>{};
+  final Set<String> _loadingMoreCommentPostIds = <String>{};
+  final Map<String, Future<void>> _commentLoadFutures =
+      <String, Future<void>>{};
+  final List<String> _forYouFeedIds = <String>[];
+  final List<String> _followingFeedIds = <String>[];
+  final Set<String> _blockedAuthorIds = <String>{};
+  final Set<String> _reportedPostIds = <String>{};
+  List<ForumNotificationItem> _notifications = <ForumNotificationItem>[];
+  StreamSubscription<AuthState>? _authSubscription;
+
+  String _currentUserId = '';
+  ForumUserProfile? _currentUserProfile;
+  bool _isLoading = false;
+  bool _isInitialized = false;
+  bool _hasLoadedSnapshot = false;
+  bool _isLoadingMoreForYou = false;
+  bool _isLoadingMoreFollowing = false;
+  bool _hasMoreForYou = false;
+  bool _hasMoreFollowing = false;
+  ForumPageCursor? _nextForYouCursor;
+  ForumPageCursor? _nextFollowingCursor;
+  String? _errorMessage;
+  Future<void>? _loadFuture;
+  Future<void>? _loadMoreForYouFuture;
+  Future<void>? _loadMoreFollowingFuture;
+
+  bool get isLoading => _isLoading;
+  bool get isLoadingMoreForYou => _isLoadingMoreForYou;
+  bool get isLoadingMoreFollowing => _isLoadingMoreFollowing;
+  bool get hasMoreForYou => _hasMoreForYou;
+  bool get hasMoreFollowing => _hasMoreFollowing;
+  String? get errorMessage => _errorMessage;
+
+  String get currentUserId => _currentUserId;
+
+  ForumUserProfile get currentUserProfile =>
+      _currentUserProfile ??
+      ForumUserProfile(
+        author: const ForumAuthor(
+          id: '',
+          name: 'Forum user',
+          handle: '@forum_user',
+          avatarUrl: '',
+        ),
+        followersCount: 0,
+        followingCount: 0,
+        isCurrentUser: true,
+      );
+
+  ForumAuthor get currentUserAuthor => currentUserProfile.author;
+
+  List<ForumPost> get forYouPosts => _orderedPosts(_forYouFeedIds);
+
+  List<ForumPost> get followingPosts => _orderedPosts(_followingFeedIds);
+
+  List<ForumPost> get savedPosts {
+    final Set<String> orderedIds = <String>{
+      ..._forYouFeedIds,
+      ..._followingFeedIds,
+      ..._postsById.keys,
+    };
+
+    return orderedIds
+        .map((String id) => _postsById[id])
+        .whereType<ForumPost>()
+        .where(
+          (ForumPost post) =>
+              post.isBookmarked && !_blockedAuthorIds.contains(post.author.id),
+        )
+        .toList(growable: false);
+  }
+
+  List<ForumNotificationItem> get notifications =>
+      List<ForumNotificationItem>.unmodifiable(_notifications);
+
+  Future<void> init({bool preload = true}) async {
+    if (!_isInitialized) {
+      _authSubscription ??= _repository.authStateChanges.listen((
+        AuthState data,
+      ) {
+        if (data.session?.user == null) {
+          _clear();
+          notifyListeners();
+          return;
+        }
+
+        unawaited(refresh());
+      });
+      _isInitialized = true;
+    }
+
+    if (preload) {
+      await ensureLoaded();
+    }
+  }
+
+  Future<void> ensureLoaded({bool forceRefresh = false}) async {
+    await init(preload: false);
+    if (!forceRefresh && _hasLoadedSnapshot) {
+      return;
+    }
+
+    final Future<void> load = _loadFuture ??= refresh().whenComplete(
+      () => _loadFuture = null,
+    );
+    await load;
+  }
+
+  Future<void> refresh({bool notifyLoading = true}) async {
+    if (notifyLoading) {
+      _isLoading = true;
+      _errorMessage = null;
+      notifyListeners();
+    }
+
+    try {
+      final ForumRepositorySnapshot snapshot = await _repository.loadSnapshot();
+      _applySnapshot(snapshot);
+      _hasLoadedSnapshot = true;
+      _errorMessage = null;
+    } catch (error) {
+      _errorMessage = error.toString();
+      debugPrint('Load forum data error: $error');
+    } finally {
+      _isLoading = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> loadMoreForYou() {
+    if (!_hasLoadedSnapshot) {
+      return ensureLoaded();
+    }
+    if (_isLoadingMoreForYou || !_hasMoreForYou) {
+      return _loadMoreForYouFuture ?? Future<void>.value();
+    }
+
+    _isLoadingMoreForYou = true;
+    notifyListeners();
+    final Future<void> load = _repository
+        .loadSnapshot(
+          beforeForYouCursor: _nextForYouCursor,
+          limit: 20,
+          loadFollowingPage: false,
+          includeNotifications: false,
+        )
+        .then((ForumRepositorySnapshot snapshot) {
+          _mergeSnapshot(snapshot, appendForYou: true, appendFollowing: false);
+          _errorMessage = null;
+        })
+        .catchError((Object error) {
+          _errorMessage = error.toString();
+          debugPrint('Load more forum data error: $error');
+        })
+        .whenComplete(() {
+          _isLoadingMoreForYou = false;
+          _loadMoreForYouFuture = null;
+          notifyListeners();
+        });
+    _loadMoreForYouFuture = load;
+    return load;
+  }
+
+  Future<void> loadMoreFollowing() {
+    if (!_hasLoadedSnapshot) {
+      return ensureLoaded();
+    }
+    if (_isLoadingMoreFollowing || !_hasMoreFollowing) {
+      return _loadMoreFollowingFuture ?? Future<void>.value();
+    }
+
+    _isLoadingMoreFollowing = true;
+    notifyListeners();
+    final Future<void> load = _repository
+        .loadSnapshot(
+          beforeFollowingCursor: _nextFollowingCursor,
+          limit: 20,
+          loadForYouPage: false,
+          includeNotifications: false,
+        )
+        .then((ForumRepositorySnapshot snapshot) {
+          _mergeSnapshot(snapshot, appendForYou: false, appendFollowing: true);
+          _errorMessage = null;
+        })
+        .catchError((Object error) {
+          _errorMessage = error.toString();
+          debugPrint('Load more following forum data error: $error');
+        })
+        .whenComplete(() {
+          _isLoadingMoreFollowing = false;
+          _loadMoreFollowingFuture = null;
+          notifyListeners();
+        });
+    _loadMoreFollowingFuture = load;
+    return load;
+  }
+
+  ForumPost? postById(String postId) {
+    final ForumPost? post = _postsById[postId];
+    if (post == null || _blockedAuthorIds.contains(post.author.id)) {
+      return null;
+    }
+    return post;
+  }
+
+  ForumUserProfile? profileById(String authorId) => _profilesById[authorId];
+
+  bool isCurrentUser(String authorId) => authorId == currentUserId;
+
+  bool isAuthorBlocked(String authorId) => _blockedAuthorIds.contains(authorId);
+
+  bool isPostReported(String postId) => _reportedPostIds.contains(postId);
+
+  List<ForumPost> postsByAuthor(String authorId) {
+    if (_blockedAuthorIds.contains(authorId)) {
+      return const <ForumPost>[];
+    }
+
+    final Set<String> orderedIds = <String>{
+      ..._forYouFeedIds,
+      ..._followingFeedIds,
+      ..._postsById.keys,
+    };
+
+    return orderedIds
+        .map((String id) => _postsById[id])
+        .whereType<ForumPost>()
+        .where((ForumPost post) => post.author.id == authorId)
+        .toList(growable: false);
+  }
+
+  int postsCountForAuthor(String authorId) => postsByAuthor(authorId).length;
+
+  List<ForumComment> commentsForPost(String postId) {
+    return List<ForumComment>.unmodifiable(
+      _commentsByPostId[postId] ?? const <ForumComment>[],
+    );
+  }
+
+  bool hasLoadedComments(String postId) =>
+      _loadedCommentPostIds.contains(postId);
+
+  bool isLoadingComments(String postId) =>
+      _loadingInitialCommentPostIds.contains(postId);
+
+  bool isLoadingMoreComments(String postId) =>
+      _loadingMoreCommentPostIds.contains(postId);
+
+  bool hasMoreComments(String postId) =>
+      _hasMoreCommentsByPostId[postId] ?? false;
+
+  String? commentErrorForPost(String postId) => _commentErrorsByPostId[postId];
+
+  Future<void> ensureCommentsLoaded(
+    String postId, {
+    bool forceRefresh = false,
+  }) {
+    if (!forceRefresh && hasLoadedComments(postId)) {
+      return Future<void>.value();
+    }
+
+    final Future<void>? activeLoad = _commentLoadFutures[postId];
+    if (activeLoad != null) {
+      return activeLoad;
+    }
+
+    final Future<void> load =
+        _loadCommentsPage(
+          postId: postId,
+          beforeCursor: null,
+          append: false,
+        ).whenComplete(() {
+          _commentLoadFutures.remove(postId);
+        });
+    _commentLoadFutures[postId] = load;
+    return load;
+  }
+
+  Future<void> loadMoreComments(String postId) {
+    if (!hasLoadedComments(postId)) {
+      return ensureCommentsLoaded(postId);
+    }
+    if (!hasMoreComments(postId)) {
+      return Future<void>.value();
+    }
+
+    final Future<void>? activeLoad = _commentLoadFutures[postId];
+    if (activeLoad != null) {
+      return activeLoad;
+    }
+
+    final Future<void> load =
+        _loadCommentsPage(
+          postId: postId,
+          beforeCursor: _nextCommentCursorByPostId[postId],
+          append: true,
+        ).whenComplete(() {
+          _commentLoadFutures.remove(postId);
+        });
+    _commentLoadFutures[postId] = load;
+    return load;
+  }
+
+  void toggleLike(String postId) {
+    final ForumPost? post = _postsById[postId];
+    if (post == null) return;
+
+    final bool shouldLike = !post.isLiked;
+    _postsById[postId] = post.copyWith(
+      isLiked: shouldLike,
+      likes: shouldLike ? post.likes + 1 : post.likes - 1,
+    );
+    notifyListeners();
+
+    unawaited(
+      _persist(
+        () => _repository.setPostLiked(postId: postId, liked: shouldLike),
+      ),
+    );
+  }
+
+  void toggleBookmark(String postId) {
+    final ForumPost? post = _postsById[postId];
+    if (post == null) return;
+
+    final bool shouldBookmark = !post.isBookmarked;
+    _postsById[postId] = post.copyWith(isBookmarked: shouldBookmark);
+    notifyListeners();
+
+    unawaited(
+      _persist(
+        () => _repository.setBookmarked(
+          postId: postId,
+          bookmarked: shouldBookmark,
+        ),
+      ),
+    );
+  }
+
+  void toggleFollowAuthor(String authorId) {
+    final ForumUserProfile? profile = _profilesById[authorId];
+    if (profile == null ||
+        profile.isCurrentUser ||
+        _blockedAuthorIds.contains(authorId)) {
+      return;
+    }
+
+    final bool shouldFollow = !profile.author.isFollowing;
+    _setAuthorFollowing(authorId: authorId, isFollowing: shouldFollow);
+    _syncFollowingFeed(authorId: authorId, isFollowing: shouldFollow);
+    notifyListeners();
+
+    unawaited(
+      _persist(
+        () => _repository.setFollowing(
+          authorId: authorId,
+          following: shouldFollow,
+        ),
+      ),
+    );
+  }
+
+  void toggleBlockAuthor(String authorId) {
+    final ForumUserProfile? profile = _profilesById[authorId];
+    if (profile == null || profile.isCurrentUser) return;
+
+    final bool shouldBlock = !_blockedAuthorIds.contains(authorId);
+    if (shouldBlock) {
+      _blockedAuthorIds.add(authorId);
+      _setAuthorFollowing(authorId: authorId, isFollowing: false);
+      _syncFollowingFeed(authorId: authorId, isFollowing: false);
+    } else {
+      _blockedAuthorIds.remove(authorId);
+    }
+    notifyListeners();
+
+    unawaited(
+      _persist(
+        () => _repository.setBlocked(authorId: authorId, blocked: shouldBlock),
+      ),
+    );
+  }
+
+  void submitReport({
+    required String postId,
+    required String reason,
+    String? details,
+  }) {
+    if (!_postsById.containsKey(postId)) return;
+
+    _reportedPostIds.add(postId);
+    notifyListeners();
+
+    unawaited(
+      _persist(
+        () => _repository.submitReport(
+          postId: postId,
+          reason: reason,
+          details: details,
+        ),
+      ),
+    );
+  }
+
+  void toggleCommentLike(String postId, String commentId) {
+    final List<ForumComment> comments =
+        _commentsByPostId[postId] ?? <ForumComment>[];
+    final int index = comments.indexWhere(
+      (ForumComment item) => item.id == commentId,
+    );
+    if (index < 0) return;
+
+    final ForumComment comment = comments[index];
+    final bool shouldLike = !comment.isLiked;
+    comments[index] = comment.copyWith(
+      isLiked: shouldLike,
+      likes: shouldLike ? comment.likes + 1 : comment.likes - 1,
+    );
+    notifyListeners();
+
+    unawaited(
+      _persist(
+        () => _repository.setCommentLiked(
+          commentId: commentId,
+          liked: shouldLike,
+        ),
+      ),
+    );
+  }
+
+  void addReply({
+    required String postId,
+    required String replyText,
+    String? replyToHandle,
+  }) {
+    final ForumPost? post = _postsById[postId];
+    if (post == null) return;
+
+    final String trimmed = replyText.trim();
+    if (trimmed.isEmpty) return;
+
+    final String prefix = replyToHandle == null ? '' : '$replyToHandle ';
+    final String content = '$prefix$trimmed'.trim();
+    final ForumComment reply = ForumComment(
+      id: 'pending-${DateTime.now().microsecondsSinceEpoch}',
+      author: currentUserAuthor,
+      content: content,
+      timeAgo: 'now',
+      likes: 0,
+    );
+
+    final List<ForumComment> comments = _commentsByPostId.putIfAbsent(
+      postId,
+      () => <ForumComment>[],
+    );
+    comments.insert(0, reply);
+    _postsById[postId] = post.copyWith(comments: post.comments + 1);
+    notifyListeners();
+
+    unawaited(
+      _persist(() => _repository.addReply(postId: postId, content: content)),
+    );
+  }
+
+  Future<String> createPost({
+    required String content,
+    List<String> imageUrls = const <String>[],
+    List<XFile> imageFiles = const <XFile>[],
+    SharedExploreItem? sharedExploreItem,
+  }) async {
+    final String trimmed = content.trim();
+    if (trimmed.isEmpty && sharedExploreItem == null) {
+      throw ArgumentError('Post content cannot be empty');
+    }
+
+    final String postId = await _repository.createPost(
+      content: trimmed,
+      imageUrls: imageUrls,
+      imageFiles: imageFiles,
+      sharedExploreItem: sharedExploreItem,
+    );
+    await refresh(notifyLoading: false);
+    unawaited(
+      LoyaltyAwardService.instance.award(
+        actionType: 'forum_post',
+        referenceTable: 'forum_post',
+        referenceId: postId,
+        description: 'Created a forum post',
+      ),
+    );
+    return postId;
+  }
+
+  Future<void> updatePost({
+    required String postId,
+    required String content,
+    required List<String> retainedImageUrls,
+    List<XFile> imageFiles = const <XFile>[],
+  }) async {
+    final ForumPost? post = _postsById[postId];
+    if (post == null) {
+      throw StateError('Post not found.');
+    }
+    if (!isCurrentUser(post.author.id)) {
+      throw StateError('You can only edit your own posts.');
+    }
+
+    final String trimmed = content.trim();
+    if (trimmed.isEmpty &&
+        post.sharedItem == null &&
+        post.sharedTripPlan == null) {
+      throw ArgumentError('Post content cannot be empty');
+    }
+
+    final List<String> imageUrls = await _repository.updatePost(
+      postId: postId,
+      content: trimmed,
+      retainedImageUrls: retainedImageUrls,
+      imageFiles: imageFiles,
+    );
+    _postsById[postId] = post.copyWith(content: trimmed, imageUrls: imageUrls);
+    notifyListeners();
+  }
+
+  Future<void> deletePost(String postId) async {
+    final ForumPost? post = _postsById[postId];
+    if (post == null) {
+      throw StateError('Post not found.');
+    }
+    if (!isCurrentUser(post.author.id)) {
+      throw StateError('You can only delete your own posts.');
+    }
+
+    await _repository.deletePost(postId);
+    _postsById.remove(postId);
+    _commentsByPostId.remove(postId);
+    _clearCommentState(postId);
+    _forYouFeedIds.remove(postId);
+    _followingFeedIds.remove(postId);
+    _reportedPostIds.remove(postId);
+    notifyListeners();
+  }
+
+  List<ForumPost> _orderedPosts(List<String> ids) {
+    return ids
+        .map((String id) => _postsById[id])
+        .whereType<ForumPost>()
+        .where((ForumPost post) => !_blockedAuthorIds.contains(post.author.id))
+        .toList(growable: false);
+  }
+
+  Future<void> _loadCommentsPage({
+    required String postId,
+    required ForumPageCursor? beforeCursor,
+    required bool append,
+  }) async {
+    final Set<String> loadingSet = append
+        ? _loadingMoreCommentPostIds
+        : _loadingInitialCommentPostIds;
+    loadingSet.add(postId);
+    _commentErrorsByPostId.remove(postId);
+    notifyListeners();
+
+    try {
+      final ForumCommentsPage page = await _repository.loadCommentsPage(
+        postId: postId,
+        beforeCursor: beforeCursor,
+      );
+      _mergeCommentsPage(postId, page.comments, append: append);
+      _nextCommentCursorByPostId[postId] = page.nextCursor;
+      _hasMoreCommentsByPostId[postId] = page.hasMore;
+      _loadedCommentPostIds.add(postId);
+    } catch (error) {
+      _commentErrorsByPostId[postId] = error.toString();
+      debugPrint('Load forum comments error for $postId: $error');
+    } finally {
+      loadingSet.remove(postId);
+      notifyListeners();
+    }
+  }
+
+  void _mergeCommentsPage(
+    String postId,
+    List<ForumComment> incoming, {
+    required bool append,
+  }) {
+    if (!append) {
+      _commentsByPostId[postId] = List<ForumComment>.from(incoming);
+      return;
+    }
+
+    final List<ForumComment> comments = _commentsByPostId.putIfAbsent(
+      postId,
+      () => <ForumComment>[],
+    );
+    final Set<String> existingIds = comments
+        .map((ForumComment comment) => comment.id)
+        .toSet();
+    for (final ForumComment comment in incoming) {
+      if (existingIds.add(comment.id)) {
+        comments.add(comment);
+      }
+    }
+  }
+
+  void _clearCommentState(String postId) {
+    _commentsByPostId.remove(postId);
+    _nextCommentCursorByPostId.remove(postId);
+    _hasMoreCommentsByPostId.remove(postId);
+    _commentErrorsByPostId.remove(postId);
+    _loadedCommentPostIds.remove(postId);
+    _loadingInitialCommentPostIds.remove(postId);
+    _loadingMoreCommentPostIds.remove(postId);
+    _commentLoadFutures.remove(postId);
+  }
+
+  void _clearAllCommentState() {
+    _commentsByPostId.clear();
+    _nextCommentCursorByPostId.clear();
+    _hasMoreCommentsByPostId.clear();
+    _commentErrorsByPostId.clear();
+    _loadedCommentPostIds.clear();
+    _loadingInitialCommentPostIds.clear();
+    _loadingMoreCommentPostIds.clear();
+    _commentLoadFutures.clear();
+  }
+
+  void _applySnapshot(ForumRepositorySnapshot snapshot) {
+    _currentUserId = snapshot.currentUserId;
+    _currentUserProfile = snapshot.currentUserProfile;
+    _profilesById
+      ..clear()
+      ..addAll(snapshot.profilesById);
+    _postsById
+      ..clear()
+      ..addEntries(
+        snapshot.posts.map(
+          (ForumPost post) => MapEntry<String, ForumPost>(post.id, post),
+        ),
+      );
+    _clearAllCommentState();
+    snapshot.commentsByPostId.forEach((
+      String postId,
+      List<ForumComment> comments,
+    ) {
+      _commentsByPostId[postId] = List<ForumComment>.from(comments);
+      _loadedCommentPostIds.add(postId);
+      _hasMoreCommentsByPostId[postId] = false;
+    });
+    _forYouFeedIds
+      ..clear()
+      ..addAll(snapshot.forYouFeedIds);
+    _followingFeedIds
+      ..clear()
+      ..addAll(snapshot.followingFeedIds);
+    _blockedAuthorIds
+      ..clear()
+      ..addAll(snapshot.blockedAuthorIds);
+    _reportedPostIds
+      ..clear()
+      ..addAll(snapshot.reportedPostIds);
+    _notifications = List<ForumNotificationItem>.from(snapshot.notifications);
+    _nextForYouCursor = snapshot.nextForYouCursor;
+    _nextFollowingCursor = snapshot.nextFollowingCursor;
+    _hasMoreForYou = snapshot.hasMoreForYou;
+    _hasMoreFollowing = snapshot.hasMoreFollowing;
+  }
+
+  void _mergeSnapshot(
+    ForumRepositorySnapshot snapshot, {
+    required bool appendForYou,
+    required bool appendFollowing,
+  }) {
+    if (_currentUserId.isEmpty) {
+      _currentUserId = snapshot.currentUserId;
+    }
+    _currentUserProfile ??= snapshot.currentUserProfile;
+    _profilesById.addAll(snapshot.profilesById);
+    for (final ForumPost post in snapshot.posts) {
+      _postsById[post.id] = post;
+    }
+    snapshot.commentsByPostId.forEach((
+      String postId,
+      List<ForumComment> comments,
+    ) {
+      _commentsByPostId[postId] = List<ForumComment>.from(comments);
+      _loadedCommentPostIds.add(postId);
+      _hasMoreCommentsByPostId[postId] = false;
+    });
+    _blockedAuthorIds.addAll(snapshot.blockedAuthorIds);
+    _reportedPostIds.addAll(snapshot.reportedPostIds);
+
+    if (appendForYou) {
+      _appendUnique(_forYouFeedIds, snapshot.forYouFeedIds);
+      _nextForYouCursor = snapshot.nextForYouCursor;
+      _hasMoreForYou = snapshot.hasMoreForYou;
+    }
+    if (appendFollowing) {
+      _appendUnique(_followingFeedIds, snapshot.followingFeedIds);
+      _nextFollowingCursor = snapshot.nextFollowingCursor;
+      _hasMoreFollowing = snapshot.hasMoreFollowing;
+    }
+  }
+
+  void _appendUnique(List<String> target, List<String> incoming) {
+    final Set<String> existing = target.toSet();
+    for (final String id in incoming) {
+      if (existing.add(id)) {
+        target.add(id);
+      }
+    }
+  }
+
+  void _clear() {
+    _currentUserId = '';
+    _currentUserProfile = null;
+    _profilesById.clear();
+    _postsById.clear();
+    _clearAllCommentState();
+    _forYouFeedIds.clear();
+    _followingFeedIds.clear();
+    _blockedAuthorIds.clear();
+    _reportedPostIds.clear();
+    _notifications = <ForumNotificationItem>[];
+    _hasLoadedSnapshot = false;
+    _isLoadingMoreForYou = false;
+    _isLoadingMoreFollowing = false;
+    _hasMoreForYou = false;
+    _hasMoreFollowing = false;
+    _nextForYouCursor = null;
+    _nextFollowingCursor = null;
+    _loadMoreForYouFuture = null;
+    _loadMoreFollowingFuture = null;
+    _errorMessage = null;
+    _isLoading = false;
+  }
+
+  void _setAuthorFollowing({
+    required String authorId,
+    required bool isFollowing,
+  }) {
+    final ForumUserProfile? profile = _profilesById[authorId];
+    if (profile == null) return;
+
+    final bool wasFollowing = profile.author.isFollowing;
+    if (wasFollowing == isFollowing) return;
+
+    final ForumUserProfile updatedTarget = profile.copyWith(
+      author: profile.author.copyWith(isFollowing: isFollowing),
+      followersCount: isFollowing
+          ? profile.followersCount + 1
+          : profile.followersCount - 1,
+    );
+    _profilesById[authorId] = updatedTarget;
+
+    final ForumUserProfile currentProfile = currentUserProfile;
+    _currentUserProfile = currentProfile.copyWith(
+      followingCount: isFollowing
+          ? currentProfile.followingCount + 1
+          : currentProfile.followingCount - 1,
+    );
+    if (_currentUserId.isNotEmpty) {
+      _profilesById[_currentUserId] = _currentUserProfile!;
+    }
+
+    _syncAuthorAcrossPosts(updatedTarget.author);
+  }
+
+  void _syncAuthorAcrossPosts(ForumAuthor updatedAuthor) {
+    _postsById.updateAll((String key, ForumPost post) {
+      if (post.author.id != updatedAuthor.id) return post;
+      return post.copyWith(
+        author: updatedAuthor,
+        showFollowButton:
+            updatedAuthor.id != currentUserId && !updatedAuthor.isFollowing,
+      );
+    });
+
+    _commentsByPostId.updateAll((String key, List<ForumComment> comments) {
+      return comments
+          .map((ForumComment comment) {
+            if (comment.author.id != updatedAuthor.id) return comment;
+            return comment.copyWith(author: updatedAuthor);
+          })
+          .toList(growable: false);
+    });
+  }
+
+  void _syncFollowingFeed({
+    required String authorId,
+    required bool isFollowing,
+  }) {
+    final List<String> authorPostIds = _forYouFeedIds
+        .where((String postId) => _postsById[postId]?.author.id == authorId)
+        .toList(growable: false);
+
+    if (isFollowing) {
+      for (final String postId in authorPostIds.reversed) {
+        if (!_followingFeedIds.contains(postId)) {
+          _followingFeedIds.insert(0, postId);
+        }
+      }
+      return;
+    }
+
+    _followingFeedIds.removeWhere(
+      (String postId) => _postsById[postId]?.author.id == authorId,
+    );
+  }
+
+  Future<void> _persist(Future<void> Function() action) async {
+    try {
+      await action();
+    } catch (error) {
+      _errorMessage = error.toString();
+      debugPrint('Save forum data error: $error');
+      notifyListeners();
+    }
+  }
+}

@@ -1,0 +1,206 @@
+import 'package:flutter/material.dart';
+import 'package:hellovietnam/app/theme.dart';
+import 'package:hellovietnam/core/config/app_constants.dart';
+import 'package:hellovietnam/core/language/app_language.dart';
+
+/// A single recommendation card (destination or dish).
+///
+/// Shows an image, title, subtitle category, star rating,
+/// and an optional favourite heart icon.
+class RecommendationCard extends StatelessWidget {
+  const RecommendationCard({
+    super.key,
+    required this.name,
+    required this.category,
+    required this.rating,
+    required this.reviewCount,
+    required this.imagePath,
+    this.isFavorite = false,
+    this.onTap,
+    this.onFavoriteTap,
+  });
+
+  final String name;
+  final String category;
+  final double? rating;
+  final int reviewCount;
+  final String imagePath;
+  final bool isFavorite;
+  final VoidCallback? onTap;
+  final VoidCallback? onFavoriteTap;
+
+  bool get _isNetworkImage =>
+      imagePath.startsWith('http://') || imagePath.startsWith('https://');
+
+  bool get _hasRating => rating != null && reviewCount > 0;
+
+  @override
+  Widget build(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    final bool isDark = theme.brightness == Brightness.dark;
+    final Color surfaceColor = isDark
+        ? theme.colorScheme.surface.withValues(alpha: 0.96)
+        : Colors.white;
+    final Color primaryText = theme.colorScheme.onSurface;
+    final Color secondaryText = isDark
+        ? const Color(0xFFA9BCC7)
+        : AppColors.textSecondary.withValues(alpha: 0.8);
+
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        width: 200,
+        decoration: BoxDecoration(
+          color: surfaceColor,
+          borderRadius: BorderRadius.circular(AppConstants.cardRadius),
+          border: Border.all(
+            color: isDark
+                ? Colors.white.withValues(alpha: 0.08)
+                : Colors.transparent,
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: isDark ? 0.26 : 0.08),
+              blurRadius: 16,
+              offset: const Offset(0, 4),
+            ),
+          ],
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // ── Image ──────────────────────────────────
+            Expanded(
+              child: Stack(
+                children: [
+                  ClipRRect(
+                    borderRadius: const BorderRadius.vertical(
+                      top: Radius.circular(AppConstants.cardRadius),
+                    ),
+                    child: SizedBox(
+                      width: double.infinity,
+                      child: _isNetworkImage
+                          ? Image.network(
+                              imagePath,
+                              fit: BoxFit.cover,
+                              errorBuilder: (_, _, _) => _buildImageFallback(),
+                            )
+                          : Image.asset(
+                              imagePath,
+                              fit: BoxFit.cover,
+                              errorBuilder: (_, _, _) => _buildImageFallback(),
+                            ),
+                    ),
+                  ),
+
+                  // Favourite heart
+                  Positioned(
+                    top: 8,
+                    right: 8,
+                    child: GestureDetector(
+                      onTap: onFavoriteTap,
+                      child: Container(
+                        width: 32,
+                        height: 32,
+                        decoration: BoxDecoration(
+                          color: isDark
+                              ? const Color(0xFF102A36).withValues(alpha: 0.86)
+                              : Colors.white.withValues(alpha: 0.85),
+                          shape: BoxShape.circle,
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withValues(
+                                alpha: isDark ? 0.24 : 0.1,
+                              ),
+                              blurRadius: 4,
+                            ),
+                          ],
+                        ),
+                        child: Icon(
+                          isFavorite ? Icons.favorite : Icons.favorite_border,
+                          size: 18,
+                          color: isFavorite ? Colors.redAccent : secondaryText,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+            // ── Info ───────────────────────────────────
+            Padding(
+              padding: const EdgeInsets.fromLTRB(10, 8, 10, 10),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // Title + rating in one row
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          name,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w700,
+                            color: primaryText,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 4),
+                      if (_hasRating) ...<Widget>[
+                        const Icon(
+                          Icons.star_rounded,
+                          size: 16,
+                          color: AppColors.starColor,
+                        ),
+                        const SizedBox(width: 2),
+                        Text(
+                          rating!.toStringAsFixed(2),
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: primaryText,
+                          ),
+                        ),
+                      ] else
+                        Flexible(
+                          child: Text(
+                            context.l10n.reviewSummaryLabel(0),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: secondaryText,
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: 3),
+                  Text(
+                    category,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(fontSize: 11, color: secondaryText),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildImageFallback() {
+    return Container(
+      color: AppColors.primaryLight.withValues(alpha: 0.2),
+      child: const Center(
+        child: Icon(Icons.image_outlined, size: 40, color: AppColors.primary),
+      ),
+    );
+  }
+}

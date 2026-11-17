@@ -1,0 +1,150 @@
+import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
+import 'package:hellovietnam/app/router.dart';
+import 'package:hellovietnam/core/config/app_constants.dart';
+import 'package:hellovietnam/core/language/app_language.dart';
+import 'package:hellovietnam/core/widgets/app_loading_screen.dart';
+import 'package:hellovietnam/features/forum/data/forum_store.dart';
+import 'package:hellovietnam/features/forum/domain/create_forum_post_request.dart';
+import 'package:hellovietnam/features/forum/domain/forum_models.dart';
+import 'package:hellovietnam/features/forum/presentation/forum_post_actions.dart';
+import 'package:hellovietnam/features/forum/presentation/widgets/forum_widgets.dart';
+
+class ForumProfilePage extends StatelessWidget {
+  const ForumProfilePage({super.key, required this.authorId});
+
+  final String authorId;
+
+  @override
+  Widget build(BuildContext context) {
+    final ForumStore store = ForumStore.instance;
+
+    void showComingSoon(String message) {
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(SnackBar(content: Text(message)));
+    }
+
+    void openProfile(String targetAuthorId) {
+      if (store.isCurrentUser(targetAuthorId)) {
+        context.push(AppRoutes.forumMe);
+        return;
+      }
+      context.push(AppRoutes.forumProfilePath(targetAuthorId));
+    }
+
+    void openSharedItem(SharedExploreItem item) {
+      context.push(
+        AppRoutes.detailPathForCategory(item.category),
+        extra: item.toItemDetailRequest(),
+      );
+    }
+
+    Future<void> openPostMenu(ForumPost post) async {
+      await ForumPostActions.open(context, store: store, post: post);
+    }
+
+    return ForumBackground(
+      child: Scaffold(
+        backgroundColor: Colors.transparent,
+        body: ListenableBuilder(
+          listenable: store,
+          builder: (BuildContext context, Widget? child) {
+            final String targetAuthorId = authorId == 'me'
+                ? store.currentUserId
+                : authorId;
+            final ForumUserProfile? profile = targetAuthorId.isEmpty
+                ? null
+                : store.profileById(targetAuthorId);
+            if (profile == null) {
+              if (store.isLoading) {
+                return AppLoadingScreen(
+                  message: context.l10n.ui('Loading profile'),
+                  compact: true,
+                );
+              }
+
+              return Center(
+                child: TextButton(
+                  onPressed: () => context.pop(),
+                  child: Text(
+                    store.errorMessage ?? context.l10n.ui('Profile not found'),
+                  ),
+                ),
+              );
+            }
+
+            final List<ForumPost> posts = store.postsByAuthor(targetAuthorId);
+
+            return Column(
+              children: <Widget>[
+                ForumProfileTopBar(
+                  title: profile.author.name,
+                  subtitle: context.l10n.forumPostsCount(posts.length),
+                  onBack: () => context.pop(),
+                  onBookmark: () => context.push(AppRoutes.forumSaved),
+                  onAvatarTap: () => context.push(AppRoutes.forumMe),
+                  avatarUrl: store.currentUserAuthor.avatarUrl,
+                  showCurrentAvatar: profile.isCurrentUser,
+                ),
+                Expanded(
+                  child: ListView(
+                    padding: const EdgeInsets.fromLTRB(
+                      AppConstants.pagePadding,
+                      16,
+                      AppConstants.pagePadding,
+                      28,
+                    ),
+                    children: <Widget>[
+                      ForumProfileHeaderCard(
+                        profile: profile,
+                        postsCount: posts.length,
+                        onToggleFollow: () =>
+                            store.toggleFollowAuthor(profile.author.id),
+                      ),
+                      const SizedBox(height: 20),
+                      Text(
+                        context.l10n.ui('Posts'),
+                        style: TextStyle(
+                          fontSize: 19,
+                          fontWeight: FontWeight.w800,
+                          color: ForumColors.foreground(context),
+                        ),
+                      ),
+                      const SizedBox(height: 14),
+                      ...posts.map(
+                        (ForumPost post) => Padding(
+                          padding: const EdgeInsets.only(bottom: 14),
+                          child: ForumPostCard(
+                            post: post,
+                            onOpen: () =>
+                                context.push(AppRoutes.forumPostPath(post.id)),
+                            onAuthorTap: () => openProfile(post.author.id),
+                            onLike: () => store.toggleLike(post.id),
+                            onComment: () =>
+                                context.push(AppRoutes.forumPostPath(post.id)),
+                            onBookmark: () => store.toggleBookmark(post.id),
+                            onShare: () =>
+                                showComingSoon('Share action sẽ được nối sau.'),
+                            onFollow: () =>
+                                store.toggleFollowAuthor(post.author.id),
+                            onMore: () => openPostMenu(post),
+                            onSharedItemTap: post.sharedItem == null
+                                ? null
+                                : () => openSharedItem(post.sharedItem!),
+                            showMoreButton: true,
+                            showInlineFollow: false,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            );
+          },
+        ),
+      ),
+    );
+  }
+}

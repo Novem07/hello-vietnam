@@ -1,0 +1,67 @@
+import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
+import 'package:hellovietnam/app/router.dart';
+import 'package:hellovietnam/core/widgets/date_range_calendar.dart';
+import 'package:hellovietnam/features/planner/data/trip_wizard_data.dart';
+import 'package:hellovietnam/features/planner/presentation/widgets/planner_step_scaffold.dart';
+
+class TripDurationPage extends StatefulWidget {
+  const TripDurationPage({super.key, this.wizard});
+
+  final TripWizardData? wizard;
+
+  @override
+  State<TripDurationPage> createState() => _TripDurationPageState();
+}
+
+class _TripDurationPageState extends State<TripDurationPage> {
+  DateTimeRange? _selectedRange;
+  int _visibleYear = DateTime.now().year;
+
+  void _showPreviousYear() {
+    setState(() => _visibleYear--);
+  }
+
+  void _showNextYear() {
+    setState(() => _visibleYear++);
+  }
+
+  void _onNext() {
+    final range = _selectedRange!;
+    final startDate =
+        '${range.start.year}-${range.start.month.toString().padLeft(2, '0')}-${range.start.day.toString().padLeft(2, '0')}';
+    final nDays = range.duration.inDays + 1;
+    final wizard =
+        widget.wizard?.copyWith(startDate: startDate, nDays: nDays) ??
+        TripWizardData(startDate: startDate, nDays: nDays);
+    context.push(AppRoutes.tripPlannerInterest, extra: wizard.toJson());
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return PlannerStepScaffold(
+      currentStep: 3,
+      badgeIcon: Icons.calendar_today_outlined,
+      title: "When's your trip?",
+      subtitle: 'Choose your travel dates',
+      onBack: () => context.pop(),
+      nextEnabled: _selectedRange != null,
+      onNext: _onNext,
+      stickyBodyHeader: DateRangeYearNavigation(
+        key: const Key('trip-duration-year-navigation'),
+        year: _visibleYear,
+        onPreviousYear: _showPreviousYear,
+        onNextYear: _showNextYear,
+      ),
+      stickyBodyHeaderExtent: 76,
+      body: DateRangeCalendar(
+        firstDate: DateTime.now(),
+        visibleYear: _visibleYear,
+        showYearNavigation: false,
+        allowOneDayMode: true,
+        onRangeChanged: (DateTimeRange? range) =>
+            setState(() => _selectedRange = range),
+      ),
+    );
+  }
+}

@@ -1,0 +1,1929 @@
+import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
+import 'package:hellovietnam/app/router.dart';
+import 'package:hellovietnam/app/theme.dart';
+import 'package:hellovietnam/core/auth/auth_repository.dart';
+import 'package:hellovietnam/core/language/app_language.dart';
+import 'package:hellovietnam/core/media/media_url_resolver.dart';
+import 'package:hellovietnam/core/widgets/app_loading_screen.dart';
+import 'package:hellovietnam/features/city_detail/domain/city_detail_models.dart';
+import 'package:hellovietnam/features/item_detail/domain/detail_category.dart';
+import 'package:hellovietnam/features/item_detail/domain/item_detail_models.dart';
+import 'package:hellovietnam/features/item_detail/presentation/shared_item_detail_page.dart';
+import 'package:hellovietnam/features/profile/data/wishlist_controller.dart';
+import 'package:hellovietnam/features/profile/data/wishlist_repository.dart';
+import 'package:hellovietnam/features/report/presentation/report_issue_popup.dart';
+
+class WishlistPage extends StatefulWidget {
+  const WishlistPage({super.key});
+
+  @override
+  State<WishlistPage> createState() => _WishlistPageState();
+}
+
+class _WishlistPageState extends State<WishlistPage> {
+  WishlistType? _selectedType;
+  final WishlistController _wishlistController = WishlistController.instance;
+  List<WishlistItem> _syncedItems = <WishlistItem>[];
+  bool _isLoading = true;
+  String? _loadError;
+
+  // ignore: unused_field
+  static const List<WishlistItem> _items = <WishlistItem>[
+    WishlistItem(
+      id: 'dalat',
+      title: 'TP. Da Lat',
+      shortDescription:
+          'Da Lat is a highland city in the Lam Vien Plateau, known for its '
+          'cool climate, pine forests, and peaceful mountain scenery.',
+      detailDescription:
+          'The cathedral is a signature landmark of Ho Chi Minh City, known '
+          'for its red bricks and twin bell towers. Its French colonial '
+          'architecture makes it one of the most visited cultural sites '
+          'in the city.',
+      highlightsDescription:
+          'Da Lat offers serene lakes, green tea hills, cool pine forests, '
+          'and refreshing mountain views. Visitors can enjoy Xuan Huong Lake, '
+          'explore Cau Dat Tea Hill, hike Langbiang Mountain, or experience '
+          'the lively atmosphere of the Da Lat Night Market.',
+      coverImageUrl:
+          'https://images.unsplash.com/photo-1583417267826-aebc4d1542e1?auto=format&fit=crop&w=1400&q=80',
+      galleryImageUrls: <String>[
+        'https://images.unsplash.com/photo-1548502499-ef49e8cf98d0?auto=format&fit=crop&w=900&q=80',
+        'https://images.unsplash.com/photo-1566073771259-6a8506099945?auto=format&fit=crop&w=900&q=80',
+        'https://images.unsplash.com/photo-1505765050516-f72dcac9c60b?auto=format&fit=crop&w=900&q=80',
+      ],
+      mapImageUrl:
+          'https://staticmap.openstreetmap.de/staticmap.php?center=11.9404,108.4583&zoom=10&size=900x420&markers=11.9404,108.4583,red-pushpin',
+      rating: 4.7,
+      type: WishlistType.city,
+    ),
+    WishlistItem(
+      id: 'hanoi-food',
+      title: 'Mi Quang',
+      shortDescription:
+          'Mi Quang is a signature noodle dish from Central Vietnam, known for '
+          'its turmeric noodles, rich broth, and fresh herbs.',
+      detailDescription:
+          'Mi Quang uses flat turmeric noodles paired with a savory broth made '
+          'from pork bones and shrimp. Each bowl is finished with fresh herbs, '
+          'bean sprouts, shrimp, pork belly, peanuts, and a crunchy rice '
+          'cracker, giving it its signature mix of soft and crispy textures.',
+      highlightsDescription:
+          'A well-balanced bowl combines rich broth, fresh herbs, and crunchy '
+          'rice crackers for the classic Mi Quang experience.',
+      coverImageUrl:
+          'https://images.unsplash.com/photo-1582878826629-29b7ad1cdc43?auto=format&fit=crop&w=1400&q=80',
+      galleryImageUrls: <String>[
+        'https://images.unsplash.com/photo-1557872943-16a5ac26437e?auto=format&fit=crop&w=900&q=80',
+        'https://images.unsplash.com/photo-1466978913421-dad2ebd01d17?auto=format&fit=crop&w=900&q=80',
+        'https://images.unsplash.com/photo-1604908177076-5d2f6f1430df?auto=format&fit=crop&w=900&q=80',
+      ],
+      ingredients: <String>[
+        'Turmeric noodles',
+        'Pork or shrimps',
+        'Quail eggs',
+        'Fresh herbs',
+        'Peanuts',
+        'Rice crackers',
+      ],
+      flavors: <String>[
+        'Savory',
+        'Aromatic',
+        'Slightly sweet',
+        'Crunchy toppings',
+      ],
+      mapImageUrl:
+          'https://staticmap.openstreetmap.de/staticmap.php?center=21.0285,105.8542&zoom=12&size=900x420&markers=21.0285,105.8542,red-pushpin',
+      rating: 4.7,
+      type: WishlistType.food,
+    ),
+    WishlistItem(
+      id: 'hanoi-place',
+      title: 'Notre-Dame Cathedral of Saigon',
+      shortDescription:
+          'The cathedral is a signature landmark of Ho Chi Minh City, known '
+          'for its red bricks and twin bell towers.',
+      detailDescription:
+          'Da Lat is a misty highland city known for its cool climate, pine '
+          'forests, flower gardens, and peaceful lakes. It is one of the most '
+          'popular destinations in Vietnam for relaxation and sightseeing.',
+      highlightsDescription:
+          'The cathedral is a signature landmark of Ho Chi Minh City, known '
+          'for its twin bell towers and colonial architecture.',
+      coverImageUrl:
+          'https://images.unsplash.com/photo-1545569341-9eb8b30979d9?auto=format&fit=crop&w=1400&q=80',
+      galleryImageUrls: <String>[
+        'https://images.unsplash.com/photo-1545569341-9eb8b30979d9?auto=format&fit=crop&w=900&q=80',
+        'https://images.unsplash.com/photo-1473448912268-2022ce9509d8?auto=format&fit=crop&w=900&q=80',
+        'https://images.unsplash.com/photo-1518548419970-58e3b4079ab2?auto=format&fit=crop&w=900&q=80',
+      ],
+      mapImageUrl:
+          'https://staticmap.openstreetmap.de/staticmap.php?center=10.7797,106.6990&zoom=15&size=900x420&markers=10.7797,106.6990,red-pushpin',
+      rating: 4.7,
+      type: WishlistType.place,
+    ),
+    WishlistItem(
+      id: 'hanoi-city',
+      title: 'TP. Ha Noi',
+      shortDescription:
+          'The capital of Vietnam with historic streets, local food, and a '
+          'vibrant blend of tradition and modern life.',
+      detailDescription:
+          'Ha Noi is known for its rich history, tree-lined boulevards, and '
+          'lively old quarter. Visitors can explore museums, local cafes, and '
+          'traditional markets while enjoying authentic street food.',
+      highlightsDescription:
+          'Walk around Hoan Kiem Lake, visit the Old Quarter, enjoy egg '
+          'coffee, and discover famous cultural landmarks across the city.',
+      coverImageUrl:
+          'https://images.unsplash.com/photo-1528127269322-539801943592?auto=format&fit=crop&w=1400&q=80',
+      galleryImageUrls: <String>[
+        'https://images.unsplash.com/photo-1466442929976-97f336a657be?auto=format&fit=crop&w=900&q=80',
+        'https://images.unsplash.com/photo-1526481280695-3c46963c9c1d?auto=format&fit=crop&w=900&q=80',
+        'https://images.unsplash.com/photo-1562602833-0f4ab2fc46e8?auto=format&fit=crop&w=900&q=80',
+      ],
+      mapImageUrl:
+          'https://staticmap.openstreetmap.de/staticmap.php?center=21.0278,105.8342&zoom=11&size=900x420&markers=21.0278,105.8342,red-pushpin',
+      rating: 4.6,
+      type: WishlistType.city,
+    ),
+    WishlistItem(
+      id: 'hoi-an-city',
+      title: 'TP. Hoi An',
+      shortDescription:
+          'A charming ancient town famous for lantern streets, yellow houses, '
+          'and riverside night views.',
+      detailDescription:
+          'Hoi An offers a relaxing atmosphere with preserved architecture, '
+          'traditional craft shops, and beautiful lantern-lit evenings. It is '
+          'a perfect destination for culture, food, and photography.',
+      highlightsDescription:
+          'Explore the Ancient Town, ride a bicycle to nearby villages, and '
+          'enjoy the lantern night by the Hoai River.',
+      coverImageUrl:
+          'https://images.unsplash.com/photo-1559592413-7cec4d0cae2b?auto=format&fit=crop&w=1400&q=80',
+      galleryImageUrls: <String>[
+        'https://images.unsplash.com/photo-1528181304800-259b08848526?auto=format&fit=crop&w=900&q=80',
+        'https://images.unsplash.com/photo-1577083552431-6e5fd01aa342?auto=format&fit=crop&w=900&q=80',
+        'https://images.unsplash.com/photo-1518544866330-95a2e1b3d0f9?auto=format&fit=crop&w=900&q=80',
+      ],
+      mapImageUrl:
+          'https://staticmap.openstreetmap.de/staticmap.php?center=15.8801,108.3380&zoom=12&size=900x420&markers=15.8801,108.3380,red-pushpin',
+      rating: 4.8,
+      type: WishlistType.city,
+    ),
+    WishlistItem(
+      id: 'nha-trang-city',
+      title: 'TP. Nha Trang',
+      shortDescription:
+          'A coastal city known for sunny beaches, clear water, seafood, and '
+          'popular island tours.',
+      detailDescription:
+          'Nha Trang is one of Vietnam\'s top beach destinations with beautiful '
+          'coastline, ocean activities, and lively nightlife. It is great for '
+          'both relaxing trips and active sea adventures.',
+      highlightsDescription:
+          'Visit the main beach, explore nearby islands, enjoy fresh seafood, '
+          'and watch sunset views along the coast.',
+      coverImageUrl:
+          'https://images.unsplash.com/photo-1595877244574-e90ce41ce089?auto=format&fit=crop&w=1400&q=80',
+      galleryImageUrls: <String>[
+        'https://images.unsplash.com/photo-1518509562904-e7ef99cdcc86?auto=format&fit=crop&w=900&q=80',
+        'https://images.unsplash.com/photo-1507525428034-b723cf961d3e?auto=format&fit=crop&w=900&q=80',
+        'https://images.unsplash.com/photo-1483683804023-6ccdb62f86ef?auto=format&fit=crop&w=900&q=80',
+      ],
+      mapImageUrl:
+          'https://staticmap.openstreetmap.de/staticmap.php?center=12.2388,109.1967&zoom=11&size=900x420&markers=12.2388,109.1967,red-pushpin',
+      rating: 4.5,
+      type: WishlistType.city,
+    ),
+    WishlistItem(
+      id: 'ba-na-place',
+      title: 'Ba Na Hills',
+      shortDescription:
+          'A mountain resort near Da Nang with cool weather, scenic cable '
+          'car views, and iconic architecture.',
+      detailDescription:
+          'Ba Na Hills is a popular attraction with a European-inspired village, '
+          'gardens, and entertainment areas at high altitude. The cable car '
+          'ride offers panoramic views of forests and mountains.',
+      highlightsDescription:
+          'Take the cable car, visit French Village, enjoy mountain air, and '
+          'capture unique viewpoints across the hills.',
+      coverImageUrl:
+          'https://images.unsplash.com/photo-1623746603918-bc4bfe9c3c36?auto=format&fit=crop&w=1400&q=80',
+      galleryImageUrls: <String>[
+        'https://images.unsplash.com/photo-1549692520-acc6669e2f0c?auto=format&fit=crop&w=900&q=80',
+        'https://images.unsplash.com/photo-1578894381278-7f5f3f1f6f73?auto=format&fit=crop&w=900&q=80',
+        'https://images.unsplash.com/photo-1623746604027-1e59b88f6a15?auto=format&fit=crop&w=900&q=80',
+      ],
+      mapImageUrl:
+          'https://staticmap.openstreetmap.de/staticmap.php?center=15.9973,107.9964&zoom=12&size=900x420&markers=15.9973,107.9964,red-pushpin',
+      rating: 4.6,
+      type: WishlistType.place,
+    ),
+    WishlistItem(
+      id: 'trang-an-place',
+      title: 'Trang An Scenic',
+      shortDescription:
+          'A UNESCO site in Ninh Binh with river caves, limestone mountains, '
+          'and tranquil boat routes.',
+      detailDescription:
+          'Trang An is famous for its natural beauty and peaceful waterways. '
+          'Boat tours take visitors through caves and valleys surrounded by '
+          'dramatic limestone landscapes.',
+      highlightsDescription:
+          'Join a boat trip, visit cave systems, and enjoy panoramic viewpoints '
+          'of the Ninh Binh karst region.',
+      coverImageUrl:
+          'https://images.unsplash.com/photo-1616740540792-3daec6047779?auto=format&fit=crop&w=1400&q=80',
+      galleryImageUrls: <String>[
+        'https://images.unsplash.com/photo-1623744371652-9c3574932b09?auto=format&fit=crop&w=900&q=80',
+        'https://images.unsplash.com/photo-1586802224715-0f6ec0fd71c1?auto=format&fit=crop&w=900&q=80',
+        'https://images.unsplash.com/photo-1589308078050-8324f6fcb534?auto=format&fit=crop&w=900&q=80',
+      ],
+      mapImageUrl:
+          'https://staticmap.openstreetmap.de/staticmap.php?center=20.2545,105.9703&zoom=12&size=900x420&markers=20.2545,105.9703,red-pushpin',
+      rating: 4.8,
+      type: WishlistType.place,
+    ),
+    WishlistItem(
+      id: 'bun-cha-food',
+      title: 'Bun Cha',
+      shortDescription:
+          'Bun Cha is a classic Hanoi dish with grilled pork, rice noodles, '
+          'fresh herbs, and a sweet-savory dipping sauce.',
+      detailDescription:
+          'Bun Cha features charcoal-grilled pork served with vermicelli, '
+          'pickled vegetables, and herbs. The warm dipping broth gives it a '
+          'balanced flavor that is smoky, sweet, and savory.',
+      highlightsDescription:
+          'The contrast of smoky pork, fresh herbs, and tangy-sweet sauce '
+          'makes Bun Cha one of Vietnam\'s most loved noodle dishes.',
+      coverImageUrl:
+          'https://images.unsplash.com/photo-1604908177076-5d2f6f1430df?auto=format&fit=crop&w=1400&q=80',
+      galleryImageUrls: <String>[
+        'https://images.unsplash.com/photo-1498654896293-37aacf113fd9?auto=format&fit=crop&w=900&q=80',
+        'https://images.unsplash.com/photo-1476224203421-9ac39bcb3327?auto=format&fit=crop&w=900&q=80',
+        'https://images.unsplash.com/photo-1515003197210-e0cd71810b5f?auto=format&fit=crop&w=900&q=80',
+      ],
+      ingredients: <String>[
+        'Rice noodles',
+        'Grilled pork',
+        'Fresh herbs',
+        'Pickled vegetables',
+        'Sweet fish sauce',
+      ],
+      flavors: <String>['Savory', 'Smoky', 'Slightly sweet', 'Fresh herbs'],
+      mapImageUrl:
+          'https://staticmap.openstreetmap.de/staticmap.php?center=21.0157,105.8513&zoom=13&size=900x420&markers=21.0157,105.8513,red-pushpin',
+      rating: 4.7,
+      type: WishlistType.food,
+    ),
+    WishlistItem(
+      id: 'banh-mi-food',
+      title: 'Banh Mi',
+      shortDescription:
+          'Banh Mi is a Vietnamese baguette sandwich with savory fillings, '
+          'fresh herbs, and crunchy pickled vegetables.',
+      detailDescription:
+          'Banh Mi combines a crispy baguette with pate, meats, pickles, '
+          'cucumber, and fresh herbs. It is one of the most iconic Vietnamese '
+          'street foods, loved for its rich and layered texture.',
+      highlightsDescription:
+          'A good Banh Mi should be crispy outside, soft inside, and filled '
+          'with savory, fresh, and slightly tangy flavors.',
+      coverImageUrl:
+          'https://images.unsplash.com/photo-1562967916-eb82221dfb92?auto=format&fit=crop&w=1400&q=80',
+      galleryImageUrls: <String>[
+        'https://images.unsplash.com/photo-1504674900247-0877df9cc836?auto=format&fit=crop&w=900&q=80',
+        'https://images.unsplash.com/photo-1586190848861-99aa4a171e90?auto=format&fit=crop&w=900&q=80',
+        'https://images.unsplash.com/photo-1528735602780-2552fd46c7af?auto=format&fit=crop&w=900&q=80',
+      ],
+      ingredients: <String>[
+        'Vietnamese baguette',
+        'Cold cuts and pate',
+        'Pickled vegetables',
+        'Fresh cucumber and herbs',
+        'Homemade sauce',
+      ],
+      flavors: <String>['Savory', 'Rich', 'Crunchy', 'Fresh'],
+      mapImageUrl:
+          'https://staticmap.openstreetmap.de/staticmap.php?center=10.7718,106.6915&zoom=13&size=900x420&markers=10.7718,106.6915,red-pushpin',
+      rating: 4.6,
+      type: WishlistType.food,
+    ),
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    _wishlistController.addListener(_syncFromWishlistController);
+    // Always refresh when opening Wishlist so optimistic saves from other
+    // features are replaced with the backend title, description, and preview.
+    _loadWishlist(force: true);
+  }
+
+  @override
+  void dispose() {
+    _wishlistController.removeListener(_syncFromWishlistController);
+    super.dispose();
+  }
+
+  List<WishlistItem> get _filteredItems {
+    if (_selectedType == null) return List<WishlistItem>.from(_syncedItems);
+    return _syncedItems
+        .where((WishlistItem item) => item.type == _selectedType)
+        .toList();
+  }
+
+  void _openDetail(WishlistItem item) {
+    final FavoriteType favoriteType = _wishlistTypeToFavoriteType(item.type);
+    final List<String> fallbackImages = <String>[
+      if (item.coverImageUrl.trim().isNotEmpty) item.coverImageUrl,
+      ...item.galleryImageUrls.where((String image) => image.trim().isNotEmpty),
+    ];
+
+    switch (item.type) {
+      case WishlistType.city:
+        context.push(
+          AppRoutes.cityDetail,
+          extra: CityDetailRequest(
+            id: item.id,
+            name: item.title,
+            fallbackImages: fallbackImages,
+            fallbackImagePath: fallbackImages.isEmpty
+                ? null
+                : fallbackImages.first,
+            fallbackRating: item.rating,
+          ),
+        );
+        return;
+      case WishlistType.food:
+      case WishlistType.culture:
+      case WishlistType.activity:
+      case WishlistType.localProduct:
+        final DetailCategory category = _detailCategoryForWishlistType(
+          item.type,
+        );
+        context.push(
+          AppRoutes.detailPathForCategory(category),
+          extra: ItemDetailRequest(
+            id: item.id,
+            name: item.title,
+            category: category,
+            fallbackImages: fallbackImages,
+            fallbackImagePath: fallbackImages.isEmpty
+                ? null
+                : fallbackImages.first,
+            favoriteType: favoriteType,
+          ),
+        );
+        return;
+      case WishlistType.place:
+        Navigator.of(context).push<void>(
+          MaterialPageRoute<void>(
+            builder: (_) => SharedItemDetailPage(
+              detail: _itemDetailFromWishlistItem(item),
+              favoriteType: favoriteType,
+              favoriteRawId: item.id,
+              favoriteName: item.title,
+            ),
+          ),
+        );
+        return;
+    }
+  }
+
+  DetailCategory _detailCategoryForWishlistType(WishlistType type) {
+    switch (type) {
+      case WishlistType.food:
+        return DetailCategory.food;
+      case WishlistType.culture:
+        return DetailCategory.culture;
+      case WishlistType.activity:
+        return DetailCategory.activities;
+      case WishlistType.localProduct:
+        return DetailCategory.localProducts;
+      case WishlistType.city:
+      case WishlistType.place:
+        return DetailCategory.culture;
+    }
+  }
+
+  ItemDetail _itemDetailFromWishlistItem(WishlistItem item) {
+    final List<String> images = <String>[
+      if (item.coverImageUrl.trim().isNotEmpty) item.coverImageUrl,
+      ...item.galleryImageUrls.where((String image) => image.trim().isNotEmpty),
+    ];
+
+    return ItemDetail(
+      id: item.id,
+      name: item.title,
+      category: DetailCategory.culture,
+      images: images,
+      rating: item.rating,
+      isFavorite: true,
+      reviewCount: 0,
+      ratingLabel: item.rating.toStringAsFixed(1),
+      description: item.detailDescription,
+      whatToExpect: item.highlightsDescription,
+    );
+  }
+
+  Future<void> _loadWishlist({bool force = false}) async {
+    setState(() {
+      _isLoading = true;
+      _loadError = null;
+    });
+
+    final userId = AuthRepository.instance.user?.id;
+    if (userId == null) {
+      if (!mounted) return;
+      setState(() {
+        _isLoading = false;
+        _syncedItems = <WishlistItem>[];
+      });
+      return;
+    }
+
+    if (!force && _wishlistController.isLoaded) {
+      if (!mounted) return;
+      setState(() {
+        _syncedItems = _mappedControllerItems();
+        _isLoading = false;
+      });
+      return;
+    }
+
+    try {
+      await _wishlistController.ensureLoaded(force: force);
+      if (!mounted) return;
+      setState(() {
+        _syncedItems = _mappedControllerItems();
+        _isLoading = false;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _isLoading = false;
+        _syncedItems = <WishlistItem>[];
+        _loadError = error.toString();
+      });
+    }
+  }
+
+  Future<void> _toggleFavorite(WishlistItem item) async {
+    final userId = AuthRepository.instance.user?.id;
+    if (userId == null) {
+      _showSnackBar(context.l10n.ui('Please sign in to update wishlist.'));
+      return;
+    }
+
+    try {
+      final bool? result = await _wishlistController.toggleFavorite(
+        type: _wishlistTypeToFavoriteType(item.type),
+        rawItemId: item.id,
+        fallbackName: item.title,
+      );
+      if (!mounted || result != null) return;
+      _showSnackBar(context.l10n.ui('Please sign in to update wishlist.'));
+    } catch (error) {
+      if (!mounted) return;
+      _showSnackBar('${context.l10n.ui('Update wishlist failed')}: $error');
+    }
+  }
+
+  void _syncFromWishlistController() {
+    if (!mounted || _isLoading) return;
+    setState(() {
+      _syncedItems = _mappedControllerItems();
+    });
+  }
+
+  List<WishlistItem> _mappedControllerItems() {
+    return _wishlistController.items
+        .where(
+          (WishlistRepositoryItem item) => _wishlistController.isFavorite(
+            type: item.type,
+            rawItemId: item.id,
+          ),
+        )
+        .map(_toWishlistItem)
+        .toList(growable: true);
+  }
+
+  bool _isFavorite(WishlistItem item) {
+    return _wishlistController.isFavorite(
+      type: _wishlistTypeToFavoriteType(item.type),
+      rawItemId: item.id,
+    );
+  }
+
+  WishlistItem _toWishlistItem(WishlistRepositoryItem item) {
+    final image = item.imageUrl ?? '';
+    final description = item.description.trim().isEmpty
+        ? 'No description available.'
+        : item.description.trim();
+
+    return WishlistItem(
+      id: item.id,
+      title: item.title,
+      shortDescription: description,
+      detailDescription: description,
+      highlightsDescription: description,
+      coverImageUrl: image,
+      galleryImageUrls: image.isEmpty ? const <String>[] : <String>[image],
+      mapImageUrl: '',
+      rating: 4.5,
+      type: _favoriteTypeToWishlistType(item.type),
+    );
+  }
+
+  WishlistType _favoriteTypeToWishlistType(FavoriteType type) {
+    switch (type) {
+      case FavoriteType.city:
+        return WishlistType.city;
+      case FavoriteType.place:
+        return WishlistType.place;
+      case FavoriteType.food:
+        return WishlistType.food;
+      case FavoriteType.culture:
+        return WishlistType.culture;
+      case FavoriteType.activity:
+        return WishlistType.activity;
+      case FavoriteType.localProduct:
+        return WishlistType.localProduct;
+    }
+  }
+
+  FavoriteType _wishlistTypeToFavoriteType(WishlistType type) {
+    switch (type) {
+      case WishlistType.city:
+        return FavoriteType.city;
+      case WishlistType.place:
+        return FavoriteType.place;
+      case WishlistType.food:
+        return FavoriteType.food;
+      case WishlistType.culture:
+        return FavoriteType.culture;
+      case WishlistType.activity:
+        return FavoriteType.activity;
+      case WishlistType.localProduct:
+        return FavoriteType.localProduct;
+    }
+  }
+
+  void _showSnackBar(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    final bool isDark = theme.brightness == Brightness.dark;
+
+    return Scaffold(
+      backgroundColor: theme.scaffoldBackgroundColor,
+      body: SafeArea(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 10, 16, 14),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  Row(
+                    children: <Widget>[
+                      _WishlistGlassIconButton(
+                        icon: Icons.arrow_back_ios_new_rounded,
+                        onTap: () => Navigator.of(context).maybePop(),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          context.l10n.wishlist,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 22,
+                            fontWeight: FontWeight.w800,
+                            color: isDark
+                                ? theme.colorScheme.onSurface
+                                : AppColors.primaryDark,
+                            letterSpacing: 0,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  Row(
+                    children: <Widget>[
+                      Expanded(
+                        child: Text(
+                          context.l10n.wishlistSavedCount(
+                            _filteredItems.length,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: isDark
+                                ? const Color(0xFFA9BCC7)
+                                : AppColors.textSecondary,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      _WishlistCategoryDropdown(
+                        selectedType: _selectedType,
+                        onChanged: (WishlistType? type) {
+                          setState(() => _selectedType = type);
+                        },
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: _isLoading
+                  ? AppLoadingScreen(
+                      message: context.l10n.ui('Loading wishlist'),
+                      compact: true,
+                    )
+                  : _loadError != null
+                  ? _WishlistStatusView(
+                      message:
+                          '${context.l10n.loadWishlistFailed}\n$_loadError',
+                      actionLabel: context.l10n.retry,
+                      onActionTap: () => _loadWishlist(force: true),
+                    )
+                  : _filteredItems.isEmpty
+                  ? _WishlistStatusView(
+                      message: AuthRepository.instance.isLoggedIn
+                          ? context.l10n.noItemInWishlist(
+                              _selectedType == null
+                                  ? context.l10n.wishlistTypeLabel('item')
+                                  : context.l10n.wishlistTypeLabel(
+                                      _selectedType!.name,
+                                    ),
+                            )
+                          : context.l10n.pleaseSignInToUseWishlist,
+                      actionLabel: AuthRepository.instance.isLoggedIn
+                          ? null
+                          : context.l10n.signIn,
+                      onActionTap: AuthRepository.instance.isLoggedIn
+                          ? null
+                          : () => Navigator.of(context).maybePop(),
+                    )
+                  : ListView.separated(
+                      padding: const EdgeInsets.fromLTRB(18, 0, 18, 24),
+                      itemCount: _filteredItems.length,
+                      separatorBuilder: (BuildContext context, int index) =>
+                          const SizedBox(height: 12),
+                      itemBuilder: (BuildContext context, int index) {
+                        final WishlistItem item = _filteredItems[index];
+                        return _WishlistCard(
+                          item: item,
+                          isFavorite: _isFavorite(item),
+                          onTap: () => _openDetail(item),
+                          onToggleFavorite: () => _toggleFavorite(item),
+                        );
+                      },
+                    ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class WishlistDetailPage extends StatefulWidget {
+  const WishlistDetailPage({super.key, required this.item});
+
+  final WishlistItem item;
+
+  @override
+  State<WishlistDetailPage> createState() => _WishlistDetailPageState();
+}
+
+class _WishlistDetailPageState extends State<WishlistDetailPage> {
+  final WishlistController _wishlistController = WishlistController.instance;
+  late bool _isFavorite;
+
+  @override
+  void initState() {
+    super.initState();
+    _isFavorite = _wishlistController.isFavorite(
+      type: _favoriteTypeForWishlistType(widget.item.type),
+      rawItemId: widget.item.id,
+    );
+    _wishlistController.addListener(_syncFavoriteFromController);
+    _wishlistController.ensureLoaded().then((_) {
+      if (!mounted) return;
+      _syncFavoriteFromController();
+    });
+  }
+
+  @override
+  void dispose() {
+    _wishlistController.removeListener(_syncFavoriteFromController);
+    super.dispose();
+  }
+
+  void _syncFavoriteFromController() {
+    final bool next = _wishlistController.isFavorite(
+      type: _favoriteTypeForWishlistType(widget.item.type),
+      rawItemId: widget.item.id,
+    );
+    if (next == _isFavorite) return;
+    setState(() => _isFavorite = next);
+  }
+
+  Future<void> _toggleFavorite() async {
+    final bool previous = _isFavorite;
+    setState(() => _isFavorite = !previous);
+    try {
+      final bool? next = await _wishlistController.toggleFavorite(
+        type: _favoriteTypeForWishlistType(widget.item.type),
+        rawItemId: widget.item.id,
+        fallbackName: widget.item.title,
+      );
+      if (!mounted) return;
+      if (next == null) {
+        setState(() => _isFavorite = previous);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              context.l10n.ui('Please sign in to update wishlist.'),
+            ),
+          ),
+        );
+        return;
+      }
+      setState(() => _isFavorite = next);
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _isFavorite = previous);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('${context.l10n.ui('Update wishlist failed')}: $error'),
+        ),
+      );
+    }
+  }
+
+  void _handleBack() => Navigator.of(context).pop();
+
+  void _openAllImages(BuildContext context) {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => WishlistAllImagesPage(item: widget.item),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final ColorScheme colors = Theme.of(context).colorScheme;
+    final double topInset = MediaQuery.of(context).padding.top;
+    final double bottomInset = MediaQuery.of(context).padding.bottom;
+    final bool isPlace = widget.item.type == WishlistType.place;
+    final bool isFood = widget.item.type == WishlistType.food;
+    final double headerHeight = (isPlace || isFood) ? 300 : 320;
+    const double galleryHeight = 92;
+    const double galleryWidth = 122;
+
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (bool didPop, Object? result) {
+        if (!didPop) {
+          Navigator.of(context).pop();
+        }
+      },
+      child: Scaffold(
+        backgroundColor: Theme.of(context).scaffoldBackgroundColor,
+        body: Stack(
+          children: <Widget>[
+            SingleChildScrollView(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  Stack(
+                    children: <Widget>[
+                      ClipRRect(
+                        borderRadius: const BorderRadius.vertical(
+                          bottom: Radius.circular(14),
+                        ),
+                        child: _NetworkImageWithFallback(
+                          imageUrl: widget.item.coverImageUrl,
+                          width: double.infinity,
+                          height: headerHeight,
+                        ),
+                      ),
+                      Positioned(
+                        top: topInset + 6,
+                        right: 8,
+                        child: Column(
+                          children: <Widget>[
+                            _CircleIconButton(
+                              icon: _isFavorite
+                                  ? Icons.favorite
+                                  : Icons.favorite_border,
+                              iconColor: const Color(0xFFFF4D79),
+                              onTap: _toggleFavorite,
+                            ),
+                            const SizedBox(height: 2),
+                            _ReportAssetIconButton(
+                              onTap: () => showReportIssueFlow(context),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 20),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: <Widget>[
+                        if (isPlace || isFood)
+                          Text(
+                            widget.item.title.replaceFirst('TP. ', ''),
+                            style: const TextStyle(
+                              fontSize: 35,
+                              fontWeight: FontWeight.w800,
+                              color: Color(0xFF2EB9F8),
+                            ),
+                          )
+                        else
+                          Row(
+                            children: <Widget>[
+                              Expanded(
+                                child: Text(
+                                  widget.item.title.replaceFirst('TP. ', ''),
+                                  style: const TextStyle(
+                                    fontSize: 35,
+                                    fontWeight: FontWeight.w800,
+                                    color: Color(0xFF2EB9F8),
+                                  ),
+                                ),
+                              ),
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 10,
+                                  vertical: 4,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFFFFCC00),
+                                  borderRadius: BorderRadius.circular(999),
+                                ),
+                                child: Text(
+                                  '${widget.item.rating.toStringAsFixed(1)} \u2605',
+                                  style: const TextStyle(
+                                    fontSize: 15,
+                                    fontWeight: FontWeight.w700,
+                                    color: Colors.white,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        const SizedBox(height: 8),
+                        Text(
+                          widget.item.detailDescription,
+                          style: TextStyle(
+                            fontSize: 17,
+                            height: 1.45,
+                            color: colors.onSurface,
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+                        Row(
+                          children: <Widget>[
+                            Expanded(
+                              child: Text(
+                                context.l10n.ui('Images'),
+                                style: TextStyle(
+                                  fontSize: 34,
+                                  fontWeight: FontWeight.w800,
+                                  color: colors.primary,
+                                ),
+                              ),
+                            ),
+                            GestureDetector(
+                              onTap: () => _openAllImages(context),
+                              child: Text(
+                                context.l10n.ui('See all'),
+                                style: const TextStyle(
+                                  fontSize: 15,
+                                  fontWeight: FontWeight.w600,
+                                  color: Color(0xFF6ABFE6),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        SizedBox(
+                          height: galleryHeight,
+                          child: ListView.separated(
+                            scrollDirection: Axis.horizontal,
+                            itemCount: widget.item.galleryImageUrls.length,
+                            separatorBuilder:
+                                (BuildContext context, int index) =>
+                                    const SizedBox(width: 10),
+                            itemBuilder: (_, int index) {
+                              return GestureDetector(
+                                onTap: () => _openAllImages(context),
+                                child: ClipRRect(
+                                  borderRadius: BorderRadius.circular(14),
+                                  child: _NetworkImageWithFallback(
+                                    imageUrl:
+                                        widget.item.galleryImageUrls[index],
+                                    width: galleryWidth,
+                                    height: galleryHeight,
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                        ),
+                        if (isPlace) ...<Widget>[
+                          const SizedBox(height: 16),
+                          Text(
+                            context.l10n.ui('Location'),
+                            style: TextStyle(
+                              fontSize: 20,
+                              fontWeight: FontWeight.w800,
+                              color: colors.primary,
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          ClipRRect(
+                            borderRadius: BorderRadius.circular(14),
+                            child: _NetworkImageWithFallback(
+                              imageUrl: widget.item.mapImageUrl,
+                              width: double.infinity,
+                              height: 120,
+                            ),
+                          ),
+                          const SizedBox(height: 14),
+                          _RatingSection(rating: widget.item.rating),
+                        ] else if (isFood) ...<Widget>[
+                          const SizedBox(height: 16),
+                          Text(
+                            context.l10n.ui('Ingredients'),
+                            style: TextStyle(
+                              fontSize: 20,
+                              fontWeight: FontWeight.w800,
+                              color: colors.primary,
+                            ),
+                          ),
+                          const SizedBox(height: 6),
+                          _BulletList(items: widget.item.ingredients),
+                          const SizedBox(height: 12),
+                          Text(
+                            context.l10n.ui('Flavor'),
+                            style: TextStyle(
+                              fontSize: 20,
+                              fontWeight: FontWeight.w800,
+                              color: colors.primary,
+                            ),
+                          ),
+                          const SizedBox(height: 6),
+                          _BulletList(items: widget.item.flavors),
+                          const SizedBox(height: 12),
+                          _RatingSection(rating: widget.item.rating),
+                        ] else ...<Widget>[
+                          const SizedBox(height: 16),
+                          Text(
+                            context.l10n.ui('The highlights of a visit'),
+                            style: TextStyle(
+                              fontSize: 34,
+                              fontWeight: FontWeight.w800,
+                              color: colors.primary,
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            widget.item.highlightsDescription,
+                            style: TextStyle(
+                              fontSize: 16,
+                              height: 1.4,
+                              color: colors.onSurface,
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          ClipRRect(
+                            borderRadius: BorderRadius.circular(18),
+                            child: _NetworkImageWithFallback(
+                              imageUrl: widget.item.mapImageUrl,
+                              width: double.infinity,
+                              height: 220,
+                            ),
+                          ),
+                        ],
+                        SizedBox(height: bottomInset + 90),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Positioned(
+              top: topInset + 6,
+              left: 8,
+              child: _CircleIconButton(
+                icon: Icons.arrow_back,
+                onTap: _handleBack,
+              ),
+            ),
+            if (isFood)
+              Positioned(
+                left: 0,
+                right: 0,
+                bottom: bottomInset + 14,
+                child: Center(
+                  child: Container(
+                    width: 54,
+                    height: 54,
+                    decoration: const BoxDecoration(
+                      color: Color(0xFF7FD4F7),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(
+                      Icons.search_rounded,
+                      color: Colors.white,
+                      size: 26,
+                    ),
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class WishlistAllImagesPage extends StatelessWidget {
+  const WishlistAllImagesPage({super.key, required this.item});
+
+  final WishlistItem item;
+
+  List<String> get _allImages => <String>[
+    item.coverImageUrl,
+    ...item.galleryImageUrls,
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(14, 8, 14, 18),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              Row(
+                children: <Widget>[
+                  IconButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    icon: const Icon(
+                      Icons.arrow_back,
+                      size: 24,
+                      color: Color(0xFF2EB9F8),
+                    ),
+                  ),
+                  Expanded(
+                    child: Text(
+                      '${item.title.replaceFirst('TP. ', '')} ${context.l10n.ui('Images')}',
+                      style: TextStyle(
+                        fontSize: 26,
+                        fontWeight: FontWeight.w800,
+                        color: Theme.of(context).colorScheme.primary,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              Expanded(
+                child: GridView.builder(
+                  itemCount: _allImages.length,
+                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: 2,
+                    mainAxisSpacing: 10,
+                    crossAxisSpacing: 10,
+                    childAspectRatio: 1.25,
+                  ),
+                  itemBuilder: (_, int index) {
+                    return ClipRRect(
+                      borderRadius: BorderRadius.circular(14),
+                      child: _NetworkImageWithFallback(
+                        imageUrl: _allImages[index],
+                        width: double.infinity,
+                        height: double.infinity,
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _RatingSection extends StatelessWidget {
+  const _RatingSection({required this.rating});
+
+  final double rating;
+
+  static const List<double> _distribution = <double>[
+    0.82, // 5
+    0.60, // 4
+    0.20, // 3
+    0.12, // 2
+    0.08, // 1
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    final String ratingText = rating.toStringAsFixed(1).replaceAll('.', ',');
+    final int filledStars = rating.floor().clamp(0, 5);
+    final ColorScheme colors = Theme.of(context).colorScheme;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: <Widget>[
+        Row(
+          children: <Widget>[
+            Expanded(
+              child: Text(
+                'Rating',
+                style: TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.w800,
+                  color: colors.primary,
+                ),
+              ),
+            ),
+            Text(
+              'Show all (1322)',
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: const Color(0xFFFFCC00),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 6),
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            Expanded(
+              child: Column(
+                children: List<Widget>.generate(5, (int index) {
+                  final int label = 5 - index;
+                  final double value = _distribution[index];
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 6),
+                    child: Row(
+                      children: <Widget>[
+                        SizedBox(
+                          width: 12,
+                          child: Text(
+                            '$label',
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w500,
+                              color: colors.onSurfaceVariant,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 6),
+                        Expanded(
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(999),
+                            child: LinearProgressIndicator(
+                              value: value,
+                              minHeight: 5,
+                              backgroundColor: const Color(0xFFE6E6E6),
+                              valueColor: const AlwaysStoppedAnimation<Color>(
+                                Color(0xFFFFCC00),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                }),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Column(
+              children: <Widget>[
+                Text(
+                  ratingText,
+                  style: TextStyle(
+                    fontSize: 38,
+                    fontWeight: FontWeight.w700,
+                    color: colors.onSurface,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Row(
+                  children: List<Widget>.generate(5, (int index) {
+                    return Icon(
+                      Icons.star_rounded,
+                      size: 12,
+                      color: index < filledStars
+                          ? const Color(0xFFFFCC00)
+                          : const Color(0xFFD8D8D8),
+                    );
+                  }),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+class _BulletList extends StatelessWidget {
+  const _BulletList({required this.items});
+
+  final List<String> items;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: items
+          .map(
+            (String item) => Padding(
+              padding: const EdgeInsets.only(bottom: 2),
+              child: Text(
+                '• $item',
+                style: TextStyle(
+                  fontSize: 15,
+                  height: 1.3,
+                  color: Theme.of(context).colorScheme.onSurface,
+                ),
+              ),
+            ),
+          )
+          .toList(),
+    );
+  }
+}
+
+class _WishlistStatusView extends StatelessWidget {
+  const _WishlistStatusView({
+    required this.message,
+    this.actionLabel,
+    this.onActionTap,
+  });
+
+  final String message;
+  final String? actionLabel;
+  final VoidCallback? onActionTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    final bool isDark = theme.brightness == Brightness.dark;
+
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            Text(
+              message,
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 15,
+                height: 1.4,
+                color: isDark
+                    ? const Color(0xFFA9BCC7)
+                    : const Color(0xFF4C5A67),
+              ),
+            ),
+            if (actionLabel != null && onActionTap != null) ...<Widget>[
+              const SizedBox(height: 12),
+              TextButton(
+                onPressed: onActionTap,
+                style: TextButton.styleFrom(
+                  foregroundColor: const Color(0xFF2EB9F8),
+                ),
+                child: Text(actionLabel!),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _WishlistCard extends StatelessWidget {
+  const _WishlistCard({
+    required this.item,
+    required this.isFavorite,
+    required this.onTap,
+    required this.onToggleFavorite,
+  });
+
+  final WishlistItem item;
+  final bool isFavorite;
+  final VoidCallback onTap;
+  final VoidCallback onToggleFavorite;
+
+  @override
+  Widget build(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    final bool isDark = theme.brightness == Brightness.dark;
+    final Color surface = isDark ? const Color(0xFF081820) : Colors.white;
+    final Color titleColor = isDark
+        ? theme.colorScheme.onSurface
+        : AppColors.primaryDark;
+    final Color bodyColor = isDark
+        ? const Color(0xFFA9BCC7)
+        : AppColors.textSecondary;
+    final Color borderColor = isDark
+        ? Colors.white.withValues(alpha: 0.16)
+        : AppColors.primary.withValues(alpha: 0.28);
+    final Color innerBorderColor = isDark
+        ? Colors.white.withValues(alpha: 0.08)
+        : Colors.white.withValues(alpha: 0.85);
+
+    return LayoutBuilder(
+      builder: (BuildContext context, BoxConstraints constraints) {
+        final bool compact = constraints.maxWidth < 350;
+        final double previewWidth = compact ? 92 : 108;
+
+        return Material(
+          color: Colors.transparent,
+          borderRadius: BorderRadius.circular(22),
+          clipBehavior: Clip.antiAlias,
+          child: InkWell(
+            onTap: onTap,
+            borderRadius: BorderRadius.circular(22),
+            child: Ink(
+              decoration: BoxDecoration(
+                color: surface,
+                borderRadius: BorderRadius.circular(22),
+                border: Border.all(color: borderColor, width: 1.25),
+                boxShadow: <BoxShadow>[
+                  BoxShadow(
+                    color: isDark
+                        ? Colors.black.withValues(alpha: 0.32)
+                        : AppColors.primary.withValues(alpha: 0.11),
+                    blurRadius: 22,
+                    offset: const Offset(0, 10),
+                  ),
+                  BoxShadow(
+                    color: isDark
+                        ? Colors.white.withValues(alpha: 0.02)
+                        : Colors.white.withValues(alpha: 0.72),
+                    blurRadius: 1,
+                    offset: const Offset(0, 1),
+                  ),
+                ],
+              ),
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(21),
+                  border: Border.all(color: innerBorderColor, width: 0.7),
+                ),
+                child: SizedBox(
+                  height: compact ? 128 : 136,
+                  child: Row(
+                    children: <Widget>[
+                      ClipRRect(
+                        borderRadius: const BorderRadius.horizontal(
+                          left: Radius.circular(21),
+                        ),
+                        child: SizedBox(
+                          width: previewWidth,
+                          height: double.infinity,
+                          child: Stack(
+                            fit: StackFit.expand,
+                            children: <Widget>[
+                              _NetworkImageWithFallback(
+                                imageUrl: item.coverImageUrl,
+                                width: previewWidth,
+                                height: double.infinity,
+                              ),
+                              Positioned(
+                                top: 6,
+                                right: 6,
+                                child: _WishlistGlassIconButton(
+                                  icon: isFavorite
+                                      ? Icons.favorite_rounded
+                                      : Icons.favorite_border_rounded,
+                                  iconColor: const Color(0xFFFF4D79),
+                                  onTap: onToggleFavorite,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                      Expanded(
+                        child: Padding(
+                          padding: EdgeInsets.fromLTRB(
+                            compact ? 10 : 12,
+                            12,
+                            12,
+                            12,
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: <Widget>[
+                              Text(
+                                item.title,
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  fontSize: compact ? 17 : 18,
+                                  fontWeight: FontWeight.w800,
+                                  color: titleColor,
+                                  height: 1.12,
+                                  letterSpacing: 0,
+                                ),
+                              ),
+                              const SizedBox(height: 6),
+                              Align(
+                                alignment: Alignment.centerLeft,
+                                child: _WishlistTypeChip(type: item.type),
+                              ),
+                              const SizedBox(height: 6),
+                              Expanded(
+                                child: Text(
+                                  item.shortDescription,
+                                  maxLines: compact ? 2 : 3,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                    fontSize: 12.5,
+                                    height: 1.35,
+                                    color: bodyColor,
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _WishlistTypeChip extends StatelessWidget {
+  const _WishlistTypeChip({required this.type});
+
+  final WishlistType type;
+
+  @override
+  Widget build(BuildContext context) {
+    final bool isDark = Theme.of(context).brightness == Brightness.dark;
+
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 150),
+      child: Container(
+        height: 28,
+        padding: const EdgeInsets.symmetric(horizontal: 10),
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: AppColors.primary.withValues(alpha: isDark ? 0.16 : 0.10),
+          borderRadius: BorderRadius.circular(999),
+          border: Border.all(
+            color: AppColors.primary.withValues(alpha: isDark ? 0.20 : 0.12),
+          ),
+        ),
+        child: Text(
+          context.l10n.wishlistTypeLabel(type.name),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(
+            color: isDark ? AppColors.primaryLight : AppColors.primaryDark,
+            fontSize: 11,
+            fontWeight: FontWeight.w800,
+            letterSpacing: 0,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _WishlistGlassIconButton extends StatelessWidget {
+  const _WishlistGlassIconButton({
+    required this.icon,
+    required this.onTap,
+    this.iconColor,
+  });
+
+  final IconData icon;
+  final VoidCallback onTap;
+  final Color? iconColor;
+
+  @override
+  Widget build(BuildContext context) {
+    final bool isDark = Theme.of(context).brightness == Brightness.dark;
+    final Color foreground =
+        iconColor ??
+        (isDark
+            ? Theme.of(context).colorScheme.onSurface
+            : AppColors.primaryDark);
+
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(999),
+        child: Ink(
+          width: 44,
+          height: 44,
+          decoration: BoxDecoration(
+            color: isDark
+                ? Colors.white.withValues(alpha: 0.08)
+                : Colors.white.withValues(alpha: 0.78),
+            shape: BoxShape.circle,
+            border: Border.all(
+              color: isDark
+                  ? Colors.white.withValues(alpha: 0.10)
+                  : Colors.white.withValues(alpha: 0.90),
+            ),
+            boxShadow: <BoxShadow>[
+              BoxShadow(
+                color: isDark
+                    ? Colors.black.withValues(alpha: 0.22)
+                    : Colors.black.withValues(alpha: 0.08),
+                blurRadius: 18,
+                offset: const Offset(0, 8),
+              ),
+            ],
+          ),
+          child: Icon(icon, color: foreground, size: 20),
+        ),
+      ),
+    );
+  }
+}
+
+class _WishlistCategoryDropdown extends StatelessWidget {
+  const _WishlistCategoryDropdown({
+    required this.selectedType,
+    required this.onChanged,
+  });
+
+  final WishlistType? selectedType;
+  final ValueChanged<WishlistType?> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final bool isDark = Theme.of(context).brightness == Brightness.dark;
+    final Color foreground = isDark
+        ? AppColors.primaryLight
+        : AppColors.primaryDark;
+    final WishlistType? currentType = selectedType;
+    final String currentValue = currentType?.name ?? 'all';
+
+    return PopupMenuButton<String>(
+      initialValue: currentValue,
+      offset: const Offset(0, 48),
+      elevation: 0,
+      color: isDark ? const Color(0xFF0B1A22) : Colors.white,
+      surfaceTintColor: Colors.transparent,
+      shadowColor: Colors.black.withValues(alpha: isDark ? 0.30 : 0.12),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(20),
+        side: BorderSide(
+          color: isDark
+              ? Colors.white.withValues(alpha: 0.12)
+              : AppColors.primary.withValues(alpha: 0.14),
+        ),
+      ),
+      constraints: const BoxConstraints(minWidth: 172),
+      onSelected: (String value) {
+        if (value == 'all') {
+          onChanged(null);
+          return;
+        }
+        onChanged(
+          WishlistType.values.firstWhere(
+            (WishlistType type) => type.name == value,
+          ),
+        );
+      },
+      itemBuilder: (BuildContext context) => <PopupMenuEntry<String>>[
+        PopupMenuItem<String>(
+          value: 'all',
+          child: Text(
+            context.l10n.allCategories,
+            style: TextStyle(
+              color: Theme.of(context).colorScheme.onSurface,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ),
+        ...WishlistType.values.map(
+          (WishlistType type) => PopupMenuItem<String>(
+            value: type.name,
+            child: Text(
+              context.l10n.wishlistTypeLabel(type.name),
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.onSurface,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+        ),
+      ],
+      child: Container(
+        height: 44,
+        padding: const EdgeInsets.symmetric(horizontal: 14),
+        decoration: BoxDecoration(
+          color: isDark
+              ? Colors.white.withValues(alpha: 0.09)
+              : Colors.white.withValues(alpha: 0.86),
+          borderRadius: BorderRadius.circular(999),
+          border: Border.all(
+            color: isDark
+                ? Colors.white.withValues(alpha: 0.13)
+                : AppColors.primary.withValues(alpha: 0.22),
+            width: 1.1,
+          ),
+          boxShadow: <BoxShadow>[
+            BoxShadow(
+              color: isDark
+                  ? Colors.black.withValues(alpha: 0.24)
+                  : AppColors.primary.withValues(alpha: 0.10),
+              blurRadius: 16,
+              offset: const Offset(0, 8),
+            ),
+          ],
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            Icon(Icons.filter_list_rounded, color: foreground, size: 18),
+            const SizedBox(width: 7),
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 112),
+              child: Text(
+                currentType == null
+                    ? context.l10n.allCategories
+                    : context.l10n.wishlistTypeLabel(currentType.name),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: foreground,
+                  fontSize: 13.5,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 0,
+                ),
+              ),
+            ),
+            const SizedBox(width: 5),
+            Icon(
+              Icons.keyboard_arrow_down_rounded,
+              color: foreground,
+              size: 18,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _CircleIconButton extends StatelessWidget {
+  const _CircleIconButton({
+    required this.icon,
+    required this.onTap,
+    this.iconColor,
+  });
+
+  final IconData icon;
+  final VoidCallback onTap;
+  final Color? iconColor;
+
+  @override
+  Widget build(BuildContext context) {
+    return _WishlistGlassIconButton(
+      icon: icon,
+      iconColor: iconColor ?? Theme.of(context).colorScheme.onSurface,
+      onTap: onTap,
+    );
+  }
+}
+
+class _ReportAssetIconButton extends StatelessWidget {
+  const _ReportAssetIconButton({required this.onTap});
+
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: SizedBox(
+        width: 40,
+        height: 40,
+        child: Center(
+          child: Image.asset(
+            'assets/images/Auth_Image/problem.png',
+            width: 28,
+            height: 28,
+            fit: BoxFit.contain,
+            errorBuilder:
+                (BuildContext context, Object error, StackTrace? stackTrace) =>
+                    Icon(
+                      Icons.bug_report_outlined,
+                      size: 28,
+                      color: Theme.of(context).colorScheme.onSurface,
+                    ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _NetworkImageWithFallback extends StatelessWidget {
+  const _NetworkImageWithFallback({
+    required this.imageUrl,
+    required this.width,
+    required this.height,
+  });
+
+  final String imageUrl;
+  final double width;
+  final double height;
+
+  @override
+  Widget build(BuildContext context) {
+    final String normalizedImageUrl = MediaUrlResolver.resolve(imageUrl);
+    final bool isMap = imageUrl.toLowerCase().contains('map');
+    final Widget fallback = Container(
+      width: width,
+      height: height,
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: isMap
+              ? const <Color>[Color(0xFFDFF3E7), Color(0xFFCBE6D4)]
+              : const <Color>[Color(0xFFE8EEF3), Color(0xFFD6E0E8)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+      ),
+      alignment: Alignment.center,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          Icon(
+            isMap ? Icons.map_outlined : Icons.image_outlined,
+            color: const Color(0xFF7E8B97),
+            size: 28,
+          ),
+          const SizedBox(height: 6),
+          Text(
+            isMap ? 'Map placeholder' : 'Image placeholder',
+            style: const TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+              color: Color(0xFF6E7A86),
+            ),
+          ),
+        ],
+      ),
+    );
+
+    if (MediaUrlResolver.isNetwork(normalizedImageUrl)) {
+      return Image.network(
+        normalizedImageUrl,
+        key: ValueKey<String>('wishlist-preview-$normalizedImageUrl'),
+        width: width,
+        height: height,
+        fit: BoxFit.cover,
+        errorBuilder:
+            (BuildContext context, Object error, StackTrace? stackTrace) =>
+                fallback,
+      );
+    }
+
+    if (normalizedImageUrl.startsWith('assets/')) {
+      return Image.asset(
+        normalizedImageUrl,
+        key: ValueKey<String>('wishlist-preview-$normalizedImageUrl'),
+        width: width,
+        height: height,
+        fit: BoxFit.cover,
+        errorBuilder:
+            (BuildContext context, Object error, StackTrace? stackTrace) =>
+                fallback,
+      );
+    }
+
+    return fallback;
+  }
+}
+
+enum WishlistType { city, food, place, culture, activity, localProduct }
+
+FavoriteType _favoriteTypeForWishlistType(WishlistType type) {
+  switch (type) {
+    case WishlistType.city:
+      return FavoriteType.city;
+    case WishlistType.place:
+      return FavoriteType.place;
+    case WishlistType.food:
+      return FavoriteType.food;
+    case WishlistType.culture:
+      return FavoriteType.culture;
+    case WishlistType.activity:
+      return FavoriteType.activity;
+    case WishlistType.localProduct:
+      return FavoriteType.localProduct;
+  }
+}
+
+extension WishlistTypeLabel on WishlistType {
+  String get label {
+    switch (this) {
+      case WishlistType.city:
+        return 'City';
+      case WishlistType.food:
+        return 'Food';
+      case WishlistType.place:
+        return 'Place';
+      case WishlistType.culture:
+        return 'Culture';
+      case WishlistType.activity:
+        return 'Activity';
+      case WishlistType.localProduct:
+        return 'Local Product';
+    }
+  }
+}
+
+class WishlistItem {
+  const WishlistItem({
+    required this.id,
+    required this.title,
+    required this.shortDescription,
+    required this.detailDescription,
+    required this.highlightsDescription,
+    required this.coverImageUrl,
+    required this.galleryImageUrls,
+    required this.mapImageUrl,
+    required this.rating,
+    required this.type,
+    this.ingredients = const <String>[],
+    this.flavors = const <String>[],
+  });
+
+  final String id;
+  final String title;
+  final String shortDescription;
+  final String detailDescription;
+  final String highlightsDescription;
+  final String coverImageUrl;
+  final List<String> galleryImageUrls;
+  final String mapImageUrl;
+  final double rating;
+  final WishlistType type;
+  final List<String> ingredients;
+  final List<String> flavors;
+}

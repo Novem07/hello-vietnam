@@ -1,0 +1,613 @@
+import 'dart:async';
+import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
+import 'package:hellovietnam/app/router.dart';
+import 'package:hellovietnam/app/theme.dart';
+import 'package:hellovietnam/core/config/app_constants.dart';
+import 'package:hellovietnam/core/language/app_language.dart';
+import 'package:hellovietnam/features/explore/data/explore_repository.dart';
+import 'package:hellovietnam/features/explore/data/explore_paged_feed.dart';
+import 'package:hellovietnam/features/explore/data/explore_tracking_service.dart';
+import 'package:hellovietnam/features/explore/domain/explore_item.dart';
+import 'package:hellovietnam/features/item_detail/domain/detail_category.dart';
+import 'package:hellovietnam/features/item_detail/data/item_detail_repository.dart';
+import 'package:hellovietnam/features/item_detail/domain/item_detail_models.dart';
+import 'package:hellovietnam/features/profile/data/wishlist_controller.dart';
+import 'package:hellovietnam/features/profile/data/wishlist_repository.dart';
+
+import 'widgets/explore_floating_back_button.dart';
+import 'widgets/explore_category_filter_bar.dart';
+import 'widgets/explore_favorite_icon.dart';
+import 'widgets/explore_preview_widgets.dart';
+
+const List<String> _filterLabels = <String>[
+  'ACTIVITIES',
+  'CULTURE',
+  'FOOD',
+  'LOCAL PRODUCTS',
+];
+
+class ExploreCategoryPage extends StatefulWidget {
+  const ExploreCategoryPage({super.key, this.initialTab = 0});
+
+  final int initialTab;
+
+  @override
+  State<ExploreCategoryPage> createState() => _ExploreCategoryPageState();
+}
+
+class _ExploreCategoryPageState extends State<ExploreCategoryPage> {
+  static const int _pageSize = 12;
+
+  final ExploreRepository _repository = ExploreRepository.instance;
+
+  late int _selectedFilter;
+  late final ScrollController _scrollController;
+  late final List<ExplorePagedFeed> _feeds;
+
+  @override
+  void initState() {
+    super.initState();
+    final int maxIndex = _filterLabels.length - 1;
+    if (widget.initialTab < 0) {
+      _selectedFilter = 0;
+    } else if (widget.initialTab > maxIndex) {
+      _selectedFilter = maxIndex;
+    } else {
+      _selectedFilter = widget.initialTab;
+    }
+    _feeds = DetailCategory.values
+        .map(
+          (DetailCategory category) => ExplorePagedFeed(
+            category: category,
+            pageSize: _pageSize,
+            loader:
+                ({
+                  required DetailCategory category,
+                  required int limit,
+                  required int offset,
+                }) => _repository.loadCategoryPage(
+                  category,
+                  limit: limit,
+                  offset: offset,
+                ),
+          ),
+        )
+        .toList(growable: false);
+    _scrollController = ScrollController()..addListener(_handleScroll);
+    _loadSelectedInitial();
+  }
+
+  @override
+  void dispose() {
+    _scrollController
+      ..removeListener(_handleScroll)
+      ..dispose();
+    super.dispose();
+  }
+
+  ExplorePagedFeed get _selectedFeed => _feeds[_selectedFilter];
+
+  Future<void> _loadSelectedInitial() async {
+    if (_selectedFeed.initialized || _selectedFeed.isLoading) return;
+    final Future<void> task = _selectedFeed.loadInitial();
+    setState(() {});
+    await task;
+    if (mounted) setState(() {});
+  }
+
+  void _handleScroll() {
+    if (!_scrollController.hasClients) return;
+    if (_scrollController.position.extentAfter > 280) return;
+    unawaited(_loadMore());
+  }
+
+  Future<void> _loadMore() async {
+    final ExplorePagedFeed feed = _selectedFeed;
+    if (feed.isLoading || !feed.hasMore) return;
+    final Future<void> task = feed.loadMore();
+    setState(() {});
+    await task;
+    if (mounted) setState(() {});
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final double statusBarH = MediaQuery.of(context).padding.top;
+
+    return Scaffold(
+      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
+      body: Stack(
+        children: <Widget>[
+          if (!_selectedFeed.initialized && _selectedFeed.isLoading)
+            const Center(
+              child: CircularProgressIndicator(color: AppColors.primary),
+            )
+          else if (_selectedFeed.items.isEmpty && _selectedFeed.error != null)
+            _PageStateMessage(
+              title: 'Unable to load Explore right now.',
+              subtitle: _selectedFeed.error.toString(),
+              actionLabel: 'Retry',
+              onTap: () async {
+                setState(() {});
+                await _selectedFeed.refresh();
+                if (mounted) setState(() {});
+              },
+            )
+          else
+            _buildLoadedState(context, statusBarH),
+          ExploreFloatingBackButton(onTap: () => context.pop()),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLoadedState(BuildContext context, double statusBarH) {
+    final ExplorePagedFeed currentFeed = _selectedFeed;
+    final List<ExploreItem> items = currentFeed.items;
+
+    return CustomScrollView(
+      controller: _scrollController,
+      slivers: <Widget>[
+        SliverToBoxAdapter(
+          child: Padding(
+            padding: EdgeInsets.fromLTRB(
+              60,
+              statusBarH + 8,
+              AppConstants.pagePadding,
+              4,
+            ),
+            child: Container(
+              height: 40,
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(45),
+                border: Border.all(
+                  color: AppColors.primaryLight.withValues(alpha: 0.5),
+                ),
+              ),
+              child: Row(
+                children: <Widget>[
+                  const SizedBox(width: 12),
+                  Icon(
+                    Icons.search_rounded,
+                    color: AppColors.primary,
+                    size: 18,
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    'Vietnam',
+                    style: TextStyle(
+                      fontSize: 14,
+                      color: AppColors.primary,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+        SliverPersistentHeader(
+          pinned: true,
+          delegate: _StickyFilterDelegate(
+            topInset: statusBarH,
+            selectedIndex: _selectedFilter,
+            onTap: (int index) {
+              setState(() {
+                _selectedFilter = index;
+              });
+              unawaited(_loadSelectedInitial());
+            },
+          ),
+        ),
+        if (items.isEmpty)
+          SliverFillRemaining(
+            hasScrollBody: false,
+            child: _PageStateMessage(
+              title:
+                  'No ${_filterLabels[_selectedFilter].toLowerCase()} found.',
+              subtitle: _repository.descriptionForCategory(
+                currentFeed.category,
+              ),
+            ),
+          )
+        else ...<Widget>[
+          SliverPadding(
+            padding: const EdgeInsets.fromLTRB(
+              AppConstants.pagePadding,
+              10,
+              AppConstants.pagePadding,
+              24,
+            ),
+            sliver: SliverList(
+              delegate: SliverChildBuilderDelegate(
+                (BuildContext context, int index) => ExploreResultCard(
+                  item: items[index],
+                  category: currentFeed.category,
+                ),
+                childCount: items.length,
+              ),
+            ),
+          ),
+          if (currentFeed.isLoading)
+            const SliverToBoxAdapter(
+              child: Padding(
+                padding: EdgeInsets.only(bottom: 24),
+                child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
+              ),
+            ),
+          if (currentFeed.error != null && items.isNotEmpty)
+            SliverToBoxAdapter(
+              child: _PageStateMessage(
+                title: 'Could not load more items.',
+                subtitle: currentFeed.error.toString(),
+                actionLabel: 'Retry',
+                onTap: _loadMore,
+              ),
+            ),
+        ],
+      ],
+    );
+  }
+}
+
+class _StickyFilterDelegate extends SliverPersistentHeaderDelegate {
+  _StickyFilterDelegate({
+    required this.topInset,
+    required this.selectedIndex,
+    required this.onTap,
+  });
+
+  final double topInset;
+  final int selectedIndex;
+  final ValueChanged<int> onTap;
+
+  @override
+  double get minExtent => topInset + ExploreCategoryFilterBar.height + 8;
+
+  @override
+  double get maxExtent => minExtent;
+
+  @override
+  Widget build(
+    BuildContext context,
+    double shrinkOffset,
+    bool overlapsContent,
+  ) {
+    final Color background = Theme.of(context).colorScheme.surface;
+    return ColoredBox(
+      color: background.withValues(alpha: 0.92),
+      child: Padding(
+        padding: EdgeInsets.only(top: topInset, bottom: 8),
+        child: ExploreCategoryFilterBar(
+          labels: _filterLabels
+              .map((String label) => context.l10n.ui(label))
+              .toList(growable: false),
+          selectedIndex: selectedIndex,
+          onSelected: onTap,
+        ),
+      ),
+    );
+  }
+
+  @override
+  bool shouldRebuild(covariant _StickyFilterDelegate oldDelegate) {
+    return selectedIndex != oldDelegate.selectedIndex ||
+        topInset != oldDelegate.topInset;
+  }
+}
+
+class ExploreResultCard extends StatefulWidget {
+  const ExploreResultCard({
+    super.key,
+    required this.item,
+    required this.category,
+    this.favoriteType,
+    this.onTap,
+    this.rating,
+    this.trackExploreBehavior = true,
+  });
+
+  final ExploreItem item;
+  final DetailCategory category;
+  final FavoriteType? favoriteType;
+  final VoidCallback? onTap;
+  final double? rating;
+  final bool trackExploreBehavior;
+
+  @override
+  State<ExploreResultCard> createState() => _ExploreResultCardState();
+}
+
+class _ExploreResultCardState extends State<ExploreResultCard> {
+  late final PageController _imageController;
+  final WishlistController _wishlistController = WishlistController.instance;
+  final ExploreTrackingService _trackingService =
+      ExploreTrackingService.instance;
+
+  @override
+  void initState() {
+    super.initState();
+    _imageController = PageController();
+    _wishlistController.ensureLoaded();
+  }
+
+  Future<void> _toggleFavorite() async {
+    try {
+      final bool? result = await _wishlistController.toggleFavorite(
+        type: _favoriteType,
+        rawItemId: widget.item.id,
+        fallbackName: widget.item.name,
+      );
+      if (!mounted) return;
+      if (result != null) {
+        if (widget.trackExploreBehavior) {
+          unawaited(
+            _trackingService.trackFavoriteChanged(
+              category: widget.category,
+              contentId: widget.item.id,
+              provinceId: widget.item.provinceId,
+              isFavorite: result,
+            ),
+          );
+        }
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please sign in to update wishlist.')),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Update wishlist failed: $error')));
+    }
+  }
+
+  FavoriteType _favoriteTypeForCategory(DetailCategory category) {
+    switch (category) {
+      case DetailCategory.activities:
+        return FavoriteType.activity;
+      case DetailCategory.culture:
+        return FavoriteType.culture;
+      case DetailCategory.food:
+        return FavoriteType.food;
+      case DetailCategory.localProducts:
+        return FavoriteType.localProduct;
+    }
+  }
+
+  FavoriteType get _favoriteType =>
+      widget.favoriteType ?? _favoriteTypeForCategory(widget.category);
+
+  @override
+  void dispose() {
+    _imageController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    const List<String> emptyImages = <String>[];
+    final List<String> itemImages = widget.item.imagePath.trim().isEmpty
+        ? emptyImages
+        : <String>[widget.item.imagePath];
+    final int imageCount = itemImages.length;
+
+    return GestureDetector(
+      onTap:
+          widget.onTap ??
+          () {
+            final ItemDetailRequest request = ItemDetailRequest(
+              id: widget.item.id,
+              name: widget.item.name,
+              category: widget.category,
+              fallbackImages: itemImages,
+              fallbackImagePath: imageCount == 0 ? null : itemImages.first,
+              trackExploreBehavior: true,
+              exploreProvinceId: widget.item.provinceId,
+            );
+            ItemDetailRepository.instance.prefetch(request);
+            context.push(
+              AppRoutes.detailPathForCategory(widget.category),
+              extra: request,
+            );
+          },
+      child: Padding(
+        padding: const EdgeInsets.only(bottom: 20),
+        child: Column(
+          children: <Widget>[
+            ClipRRect(
+              borderRadius: BorderRadius.circular(16),
+              child: AspectRatio(
+                aspectRatio: 16 / 10,
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: <Widget>[
+                    if (imageCount == 0)
+                      Container(color: const Color(0xFFD8F2FD))
+                    else
+                      PageView.builder(
+                        controller: _imageController,
+                        physics: const BouncingScrollPhysics(
+                          parent: PageScrollPhysics(),
+                        ),
+                        itemCount: imageCount,
+                        itemBuilder: (BuildContext context, int index) {
+                          return AnimatedBuilder(
+                            animation: _imageController,
+                            builder: (BuildContext context, Widget? child) {
+                              final double page = _imageController.hasClients
+                                  ? (_imageController.page ??
+                                        _imageController.initialPage.toDouble())
+                                  : _imageController.initialPage.toDouble();
+                              final double distance = (page - index)
+                                  .abs()
+                                  .clamp(0.0, 1.0);
+                              final double emphasis = (1 - distance).clamp(
+                                0.0,
+                                1.0,
+                              );
+
+                              return Transform.scale(
+                                scale: 0.94 + (emphasis * 0.06),
+                                child: DecoratedBox(
+                                  decoration: BoxDecoration(
+                                    boxShadow: <BoxShadow>[
+                                      BoxShadow(
+                                        color: AppColors.primary.withValues(
+                                          alpha: 0.06 + (emphasis * 0.16),
+                                        ),
+                                        blurRadius: 18,
+                                        offset: const Offset(0, 8),
+                                      ),
+                                    ],
+                                  ),
+                                  child: child,
+                                ),
+                              );
+                            },
+                            child: ExplorePreviewImage(
+                              imagePath: itemImages[index],
+                              borderRadius: 16,
+                            ),
+                          );
+                        },
+                      ),
+                    Positioned(
+                      top: 10,
+                      right: 10,
+                      child: AnimatedBuilder(
+                        animation: _wishlistController,
+                        builder: (BuildContext context, Widget? child) {
+                          final bool isFavorite = _wishlistController
+                              .isFavorite(
+                                type: _favoriteType,
+                                rawItemId: widget.item.id,
+                              );
+                          return GestureDetector(
+                            onTap: _toggleFavorite,
+                            child: ExploreFavoriteIcon(isFavorite: isFavorite),
+                          );
+                        },
+                      ),
+                    ),
+                    if (imageCount > 1)
+                      Positioned(
+                        bottom: 10,
+                        left: 12,
+                        child: ExploreLiquidDots(
+                          controller: _imageController,
+                          itemCount: imageCount,
+                        ),
+                      ),
+                    Positioned(
+                      bottom: 10,
+                      right: 12,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 4,
+                        ),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withValues(alpha: 0.45),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: <Widget>[
+                            const Icon(
+                              Icons.star,
+                              color: Colors.amber,
+                              size: 14,
+                            ),
+                            const SizedBox(width: 3),
+                            Text(
+                              (widget.rating ?? widget.item.rating)
+                                      ?.toStringAsFixed(1) ??
+                                  '4.7',
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              context.l10n.ui(widget.item.name),
+              style: TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.w600,
+                color: Theme.of(context).brightness == Brightness.dark
+                    ? Colors.white
+                    : Colors.black87,
+              ),
+              textAlign: TextAlign.center,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _PageStateMessage extends StatelessWidget {
+  const _PageStateMessage({
+    required this.title,
+    this.subtitle,
+    this.actionLabel,
+    this.onTap,
+  });
+
+  final String title;
+  final String? subtitle;
+  final String? actionLabel;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            Text(
+              context.l10n.ui(title),
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.w700,
+                color: Colors.black87,
+              ),
+            ),
+            if ((subtitle ?? '').trim().isNotEmpty) ...<Widget>[
+              const SizedBox(height: 8),
+              Text(
+                subtitle!,
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 13, color: Colors.grey.shade600),
+              ),
+            ],
+            if (actionLabel != null && onTap != null) ...<Widget>[
+              const SizedBox(height: 14),
+              TextButton(
+                onPressed: onTap,
+                child: Text(context.l10n.ui(actionLabel!)),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}

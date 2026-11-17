@@ -1,0 +1,529 @@
+"""
+services/module1_repository.py
+Supabase-py DB functions for Module 1 (planning pipeline) and
+the user interest write pipeline (Phase 2).
+
+Planning pipeline reads:
+  fetch_active_tags, build_tag_map
+  fetch_place_tags_for_places, attach_place_tags_to_places
+  fetch_user_interest_tags, fetch_user_travel_profile
+  fetch_user_onboarding_choices
+  fetch_already_rated_places
+  fetch_cf_scores_for_user
+  fetch_user_factors, fetch_place_factors, compute_cf_scores_from_factors
+    (embedding read path — not wired into the pipeline yet, runs alongside
+    fetch_cf_scores_for_user for smoke-testing)
+
+Write pipeline (Phase 2):
+  replace_user_interest_tags, upsert_user_interest_tags
+  upsert_user_travel_profile
+  fetch_trip_plan, fetch_trip_interest_choices
+  fetch_trip_interest_option_tags, fetch_trip_interest_option_subcategories
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from services.ttl_cache import TtlCache
+
+
+_ACTIVE_TAGS_CACHE = TtlCache[str, list[dict]](ttl_seconds=300, max_entries=1)
+# CF factor caches — cf_user_factors/cf_place_factors only change once/day
+# (see main.py's daily_cf_retrain cron). Primary invalidation is explicit:
+# cf_retrain.py calls clear_cf_factor_caches() at the end of a successful
+# run. The 12h TTL here is just a safety net (e.g. if a retrain silently
+# fails to call it), not the main invalidation mechanism.
+#
+# _USER_FACTORS_CACHE values are wrapped in a dict ({"factors": ...}) so a
+# genuinely-cached "user has no trained factors yet" (factors=None) is
+# still distinguishable from a real cache miss (TtlCache.get() also
+# returns None for a miss) — without the wrapper, untrained users would
+# silently never benefit from caching.
+_USER_FACTORS_CACHE = TtlCache[str, dict](ttl_seconds=43200, max_entries=5000)
+# Keyed per id_place (not per requested place_ids tuple) — place factors
+# are the same for every user/trip that touches that place, so this is
+# shared across users/provinces for a much higher hit rate than an
+# all-or-nothing tuple key would give.
+_PLACE_FACTORS_CACHE = TtlCache[str, list[float]](ttl_seconds=43200, max_entries=20000)
+_TRIP_OPTIONS_CACHE = TtlCache[tuple[str, ...], list[dict]](
+    ttl_seconds=300, max_entries=128
+)
+_TRIP_OPTION_TAGS_CACHE = TtlCache[tuple[str, ...], list[dict]](
+    ttl_seconds=300, max_entries=128
+)
+_TRIP_OPTION_SUBCATEGORIES_CACHE = TtlCache[tuple[str, ...], list[dict]](
+    ttl_seconds=300, max_entries=128
+)
+
+
+# ── Tag master data ───────────────────────────────────────────────────────────
+
+def fetch_active_tags(supabase: Any) -> list[dict]:
+    cached = _ACTIVE_TAGS_CACHE.get("active")
+    if cached is not None:
+        return cached
+    response = (
+        supabase
+        .table("tag")
+        .select("id_tag, tag_code, tag_name, tag_group, description, is_active")
+        .eq("is_active", True)
+        .execute()
+    )
+    rows = response.data or []
+    _ACTIVE_TAGS_CACHE.set("active", rows)
+    return rows
+
+
+def build_tag_map(tags: list[dict]) -> dict[str, dict]:
+    return {tag["tag_code"]: tag for tag in tags if tag.get("tag_code")}
+
+
+# ── Place tags ────────────────────────────────────────────────────────────────
+
+def fetch_place_tags_for_places(
+    supabase: Any,
+    place_ids: list[str],
+    chunk_size: int = 100,
+) -> list[dict]:
+    if not place_ids:
+        return []
+
+    rows: list[dict] = []
+    for start in range(0, len(place_ids), chunk_size):
+        chunk = place_ids[start:start + chunk_size]
+        response = (
+            supabase
+            .table("place_tag")
+            # Single-line select — a multi-line/indented string here silently
+            # breaks the nested tag(...) embed when combined with .in_():
+            # PostgREST returns rows with unrelated columns (created_at,
+            # tag_role) instead of the requested "tag" object. Verified live
+            # against the real DB: the exact same column list on one line
+            # returns the correct nested tag{id_tag,tag_code,tag_name,
+            # tag_group} object; only the formatting differs. Keep this on
+            # one line.
+            .select("id_place,id_tag,confidence_score,source,tag(id_tag,tag_code,tag_name,tag_group)")
+            .in_("id_place", chunk)
+            .execute()
+        )
+        rows.extend(response.data or [])
+    return rows
+
+
+def attach_place_tags_to_places(
+    places: list[dict],
+    place_tag_rows: list[dict],
+) -> list[dict]:
+    rows_by_place_id: dict[str, list[dict]] = {}
+    for row in place_tag_rows:
+        place_id = row.get("id_place")
+        if not place_id:
+            continue
+        rows_by_place_id.setdefault(str(place_id), []).append(row)
+
+    enriched = []
+    for place in places:
+        enriched_place = dict(place)
+        enriched_place["place_tag"] = rows_by_place_id.get(str(place.get("id_place")), [])
+        enriched.append(enriched_place)
+    return enriched
+
+
+# ── User profile ──────────────────────────────────────────────────────────────
+
+def fetch_user_interest_tags(supabase: Any, user_id: str) -> list[dict]:
+    response = (
+        supabase
+        .table("user_interest_tag")
+        .select(
+            """
+            id_user,
+            id_tag,
+            initial_weight,
+            behavior_score,
+            behavior_weight,
+            final_weight,
+            positive_behavior_count,
+            negative_behavior_count,
+            behavior_count,
+            source,
+            tag (
+                id_tag,
+                tag_code,
+                tag_name,
+                tag_group
+            )
+            """
+        )
+        .eq("id_user", user_id)
+        .execute()
+    )
+    return response.data or []
+
+
+def fetch_user_travel_profile(supabase: Any, user_id: str) -> dict | None:
+    response = (
+        supabase
+        .table("user_travel_profile")
+        .select("id_user, companion_style, budget_level, pace_level, created_at, updated_at")
+        .eq("id_user", user_id)
+        .limit(1)
+        .execute()
+    )
+    rows = response.data or []
+    return rows[0] if rows else None
+
+
+def fetch_user_onboarding_choices(supabase: Any, user_id: str) -> list[dict]:
+    response = (
+        supabase
+        .table("user_onboarding_choice")
+        .select("id_user, screen_code, option_code, created_at, updated_at")
+        .eq("id_user", user_id)
+        .execute()
+    )
+    return response.data or []
+
+
+# ── CF scores ─────────────────────────────────────────────────────────────────
+
+def fetch_cf_scores_for_user(
+    supabase: Any,
+    user_id: str,
+    place_ids: list[str],
+) -> dict[str, float]:
+    """
+    Fetch CF scores for a specific user and the given place IDs.
+    Uses place_ids (already fetched) instead of province_id to avoid
+    a second province query.
+    """
+    if not place_ids:
+        return {}
+
+    # Keep the PostgREST filter URL comfortably below reverse-proxy limits.
+    # UUID lists expand after URL encoding, and Cloudflare may answer an
+    # oversized request with an HTML 400 page that postgrest-py cannot decode.
+    chunk_size = 100
+    result: dict[str, float] = {}
+
+    for start in range(0, len(place_ids), chunk_size):
+        chunk = place_ids[start:start + chunk_size]
+        response = (
+            supabase
+            .table("cf_score_cache")
+            .select("id_place, score")
+            .eq("id_user", user_id)
+            .in_("id_place", chunk)
+            .execute()
+        )
+        for r in (response.data or []):
+            result[str(r["id_place"])] = float(r["score"])
+
+    return result
+
+
+# ── CF factor tables (embedding path, runs alongside cf_score_cache) ───────────
+#
+# fetch_user_factors / fetch_place_factors / compute_cf_scores_from_factors are
+# NOT wired into trip_planner.py or recommend.py yet — see cf_retrain.py, which
+# now writes cf_user_factors/cf_place_factors alongside cf_score_cache so this
+# read path can be smoke-tested independently first.
+
+def fetch_user_factors(
+    supabase: Any,
+    id_user: str,
+) -> list[float] | None:
+    """Fetch the raw WALS factor vector for one user, or None if untrained.
+
+    Cached — see _USER_FACTORS_CACHE above.
+    """
+    cached = _USER_FACTORS_CACHE.get(id_user)
+    if cached is not None:
+        return cached["factors"]
+
+    response = (
+        supabase
+        .table("cf_user_factors")
+        .select("factors")
+        .eq("id_user", id_user)
+        .limit(1)
+        .execute()
+    )
+    rows = response.data or []
+    factors = [float(v) for v in rows[0]["factors"]] if rows else None
+    _USER_FACTORS_CACHE.set(id_user, {"factors": factors})
+    return factors
+
+
+def fetch_place_factors(
+    supabase: Any,
+    place_ids: list[str],
+) -> dict[str, list[float]]:
+    """Fetch raw WALS factor vectors for the given place IDs.
+
+    Cached per id_place (see _PLACE_FACTORS_CACHE above) — only place_ids
+    that miss the cache are actually fetched from Supabase.
+    """
+    if not place_ids:
+        return {}
+
+    result: dict[str, list[float]] = {}
+    missing_ids: list[str] = []
+    for pid in place_ids:
+        cached = _PLACE_FACTORS_CACHE.get(pid)
+        if cached is not None:
+            result[pid] = cached
+        else:
+            missing_ids.append(pid)
+
+    if missing_ids:
+        # Same chunking rationale as fetch_cf_scores_for_user: keep the
+        # PostgREST filter URL comfortably below reverse-proxy limits.
+        chunk_size = 100
+        for start in range(0, len(missing_ids), chunk_size):
+            chunk = missing_ids[start:start + chunk_size]
+            response = (
+                supabase
+                .table("cf_place_factors")
+                .select("id_place, factors")
+                .in_("id_place", chunk)
+                .execute()
+            )
+            for r in (response.data or []):
+                pid = str(r["id_place"])
+                factors = [float(v) for v in r["factors"]]
+                result[pid] = factors
+                _PLACE_FACTORS_CACHE.set(pid, factors)
+
+    return result
+
+
+def clear_cf_factor_caches() -> None:
+    """Explicit invalidation-on-write for the CF factor caches — call this
+    once a cf_retrain run finishes successfully (see jobs/cf_retrain.py),
+    so the next read after a retrain always gets the fresh factors instead
+    of waiting out the TTL safety net."""
+    _USER_FACTORS_CACHE.clear()
+    _PLACE_FACTORS_CACHE.clear()
+
+
+def compute_cf_scores_from_factors(
+    user_factors: list[float] | None,
+    place_factors: dict[str, list[float]],
+) -> dict[str, float]:
+    """
+    CF scores computed at request time from raw factor vectors: sigmoid(U·V),
+    matching the formula cf_score_cache is populated with (see
+    ml/wals_model.py compute_cf_scores / its module docstring) so the two are
+    on the same [0,1] scale and drop-in interchangeable in the alpha-blend.
+    Same return shape as fetch_cf_scores_for_user — dict[id_place, score].
+
+    Unlike cf_score_cache (top-500 per user), this has no top-k cutoff: a
+    score is returned for every place_id that has a factor vector.
+    """
+    if user_factors is None or not place_factors:
+        return {}
+
+    import numpy as np
+    from scipy.special import expit as sigmoid
+
+    u = np.array(user_factors, dtype=np.float64)
+    ids = list(place_factors.keys())
+    v = np.array([place_factors[pid] for pid in ids], dtype=np.float64)
+    scores = sigmoid(v @ u)
+    return {pid: float(score) for pid, score in zip(ids, scores)}
+
+
+# ── Already rated ─────────────────────────────────────────────────────────────
+
+def fetch_already_rated_places(supabase: Any, user_id: str) -> set[str]:
+    response = (
+        supabase
+        .table("rate_item")
+        .select("id_item")
+        .eq("id_user", user_id)
+        .eq("item_type", "place")
+        .execute()
+    )
+    return {str(r["id_item"]) for r in (response.data or [])}
+
+
+# ── Trip interest options (request-scoped, no trip_plan FK required) ─────────
+
+def fetch_trip_interest_options_by_ids(
+    supabase: Any,
+    option_ids: list[str],
+    chunk_size: int = 100,
+) -> list[dict]:
+    """Fetch trip_interest_option rows directly by ID — used for
+    request-scoped flow, bypasses trip_interest_choice table."""
+    if not option_ids:
+        return []
+    cache_key = tuple(option_ids)
+    cached = _TRIP_OPTIONS_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    rows: list[dict] = []
+    for start_index in range(0, len(option_ids), chunk_size):
+        chunk = option_ids[start_index:start_index + chunk_size]
+        response = (
+            supabase
+            .table("trip_interest_option")
+            .select(
+                """
+                id_trip_interest_option,
+                option_code,
+                display_name,
+                display_order,
+                is_active
+                """
+            )
+            .in_("option_code", chunk)
+            .execute()
+        )
+        rows.extend(response.data or [])
+    _TRIP_OPTIONS_CACHE.set(cache_key, rows)
+    return rows
+
+
+# ── Write pipeline (Phase 2) ──────────────────────────────────────────────────
+
+def replace_user_interest_tags(supabase: Any, user_id: str, rows: list[dict]) -> None:
+    supabase.table("user_interest_tag").delete().eq("id_user", user_id).execute()
+    if rows:
+        supabase.table("user_interest_tag").insert(rows).execute()
+
+
+def upsert_user_interest_tags(supabase: Any, rows: list[dict]) -> None:
+    if not rows:
+        return
+    supabase.table("user_interest_tag").upsert(rows, on_conflict="id_user,id_tag").execute()
+
+
+def upsert_user_travel_profile(supabase: Any, profile: dict) -> None:
+    supabase.table("user_travel_profile").upsert(profile, on_conflict="id_user").execute()
+
+
+def fetch_trip_plan(supabase: Any, trip_plan_id: str) -> dict | None:
+    response = (
+        supabase
+        .table("trip_plan")
+        .select(
+            "id_trip_plan, id_user, id_province, start_date, end_date, total_days, status, created_at, updated_at"
+        )
+        .eq("id_trip_plan", trip_plan_id)
+        .limit(1)
+        .execute()
+    )
+    rows = response.data or []
+    return rows[0] if rows else None
+
+
+def fetch_trip_interest_choices(supabase: Any, trip_plan_id: str) -> list[dict]:
+    response = (
+        supabase
+        .table("trip_interest_choice")
+        .select(
+            """
+            id_trip_plan,
+            id_trip_interest_option,
+            selection_order,
+            source,
+            trip_interest_option (
+                id_trip_interest_option,
+                option_code,
+                display_name,
+                description,
+                display_order,
+                min_selection,
+                max_selection,
+                is_active
+            )
+            """
+        )
+        .eq("id_trip_plan", trip_plan_id)
+        .execute()
+    )
+    return response.data or []
+
+
+def fetch_trip_interest_option_tags(
+    supabase: Any,
+    option_ids: list[str],
+    chunk_size: int = 100,
+) -> list[dict]:
+    if not option_ids:
+        return []
+    cache_key = tuple(option_ids)
+    cached = _TRIP_OPTION_TAGS_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    rows: list[dict] = []
+    for start in range(0, len(option_ids), chunk_size):
+        chunk = option_ids[start:start + chunk_size]
+        response = (
+            supabase
+            .table("trip_interest_option_tag")
+            .select(
+                """
+                id_trip_interest_option,
+                id_tag,
+                weight_level,
+                raw_weight,
+                is_active,
+                tag (
+                    id_tag,
+                    tag_code,
+                    tag_name,
+                    tag_group
+                )
+                """
+            )
+            .in_("id_trip_interest_option", chunk)
+            .execute()
+        )
+        rows.extend(response.data or [])
+    _TRIP_OPTION_TAGS_CACHE.set(cache_key, rows)
+    return rows
+
+
+def fetch_trip_interest_option_subcategories(
+    supabase: Any,
+    option_ids: list[str],
+    chunk_size: int = 100,
+) -> list[dict]:
+    if not option_ids:
+        return []
+    cache_key = tuple(option_ids)
+    cached = _TRIP_OPTION_SUBCATEGORIES_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    rows: list[dict] = []
+    for start in range(0, len(option_ids), chunk_size):
+        chunk = option_ids[start:start + chunk_size]
+        response = (
+            supabase
+            .table("trip_interest_option_subcategory")
+            .select(
+                """
+                id_trip_interest_option,
+                id_place_subcategory,
+                priority_level,
+                priority_weight,
+                is_active,
+                place_subcategory (
+                    id_place_subcategory,
+                    name,
+                    place_category
+                )
+                """
+            )
+            .in_("id_trip_interest_option", chunk)
+            .execute()
+        )
+        rows.extend(response.data or [])
+    _TRIP_OPTION_SUBCATEGORIES_CACHE.set(cache_key, rows)
+    return rows

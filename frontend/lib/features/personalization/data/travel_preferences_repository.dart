@@ -1,0 +1,340 @@
+import 'dart:async';
+
+import 'package:flutter/foundation.dart';
+import 'package:hellovietnam/core/auth/auth_repository.dart';
+import 'package:hellovietnam/core/network/supabase_function_client.dart';
+import 'package:hellovietnam/core/storage/local_storage.dart' as app_storage;
+import 'package:hellovietnam/features/personalization/domain/travel_preferences.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+
+class TravelPreferencesRepository extends ChangeNotifier {
+  TravelPreferencesRepository._({
+    SupabaseClient? client,
+    SupabaseFunctionClient? functionClient,
+    FutureOr<String?> Function()? accessTokenProvider,
+    String? Function()? currentUserIdProvider,
+    bool listenToAuth = true,
+  }) : _clientOverride = client,
+       _functionClient = functionClient,
+       _accessTokenProvider = accessTokenProvider,
+       _currentUserIdProvider = currentUserIdProvider,
+       _listensToAuth = listenToAuth {
+    if (listenToAuth) {
+      AuthRepository.instance.addListener(_handleAuthChanged);
+    }
+  }
+
+  static final TravelPreferencesRepository instance =
+      TravelPreferencesRepository._();
+
+  TravelPreferencesRepository.test({
+    SupabaseClient? client,
+    SupabaseFunctionClient? functionClient,
+    FutureOr<String?> Function()? accessTokenProvider,
+    String? Function()? currentUserIdProvider,
+  }) : this._(
+         client: client,
+         functionClient: functionClient,
+         accessTokenProvider: accessTokenProvider,
+         currentUserIdProvider: currentUserIdProvider,
+         listenToAuth: false,
+       );
+
+  static const String _storageKeyPrefix = 'travel_preferences_v1_';
+  static const String _deferredStorageKeyPrefix =
+      'travel_preferences_deferred_v1_';
+  static const String _functionName = 'travel-preferences';
+
+  final SupabaseClient? _clientOverride;
+  final SupabaseFunctionClient? _functionClient;
+  final FutureOr<String?> Function()? _accessTokenProvider;
+  final String? Function()? _currentUserIdProvider;
+  final bool _listensToAuth;
+
+  bool _isReady = false;
+  bool _isHydratingCurrentUser = false;
+  UserTravelPreferences? _currentPreferences;
+
+  bool get isReady => _isReady && !_isHydratingCurrentUser;
+
+  SupabaseClient get _client => _clientOverride ?? Supabase.instance.client;
+
+  SupabaseFunctionClient get _resolvedFunctionClient =>
+      _functionClient ??
+      SupabaseFunctionClient(
+        client: _client,
+        accessTokenProvider: _accessTokenProvider,
+      );
+
+  String? get _currentUserId =>
+      _currentUserIdProvider?.call() ?? AuthRepository.instance.user?.id;
+
+  Future<String?> _currentAccessToken() async {
+    final FutureOr<String?> Function()? accessTokenProvider =
+        _accessTokenProvider;
+    String? token;
+    if (accessTokenProvider != null) {
+      token = (await accessTokenProvider())?.trim();
+    } else {
+      token = _client.auth.currentSession?.accessToken.trim();
+    }
+    return token == null || token.isEmpty ? null : token;
+  }
+
+  Future<Map<String, dynamic>> _invokeTravelPreferences(
+    Map<String, Object?> body,
+  ) async {
+    try {
+      return await _resolvedFunctionClient.invokeJson(
+        _functionName,
+        body: body,
+      );
+    } on SupabaseFunctionException catch (error) {
+      throw StateError(error.message);
+    }
+  }
+
+  UserTravelPreferences? get currentPreferences {
+    if (!_isReady || _currentUserId == null) {
+      return null;
+    }
+    return _currentPreferences;
+  }
+
+  bool get hasCompletedCurrentUser => currentPreferences != null;
+
+  bool get hasDeferredCurrentUserOnboarding {
+    final String? userId = _currentUserId;
+    if (!_isReady || userId == null || hasCompletedCurrentUser) {
+      return false;
+    }
+    return app_storage.LocalStorage.instance.getString(
+          _deferredStorageKeyFor(userId),
+        ) ==
+        'true';
+  }
+
+  Future<void> initialize() async {
+    if (_isReady) {
+      return;
+    }
+    await app_storage.LocalStorage.instance.initialize();
+    _isReady = true;
+    _currentPreferences = _readCachedCurrentUserPreferences();
+    if (_currentUserId != null) {
+      _isHydratingCurrentUser = true;
+      await _refreshCurrentUserPreferences(notify: false);
+      _isHydratingCurrentUser = false;
+    }
+    notifyListeners();
+  }
+
+  Future<void> saveCurrentUserPreferences(
+    UserTravelPreferences preferences, {
+    bool notify = true,
+  }) async {
+    final String? userId = _currentUserId;
+    if (userId == null) {
+      return;
+    }
+
+    if ((await _currentAccessToken()) == null) {
+      throw StateError('Please sign in to save travel preferences.');
+    }
+
+    final Map<String, dynamic> data = await _invokeTravelPreferences(
+      <String, dynamic>{
+        'action': 'saveTravelPreferences',
+        'preferences': preferences.toJson(),
+      },
+    );
+
+    final UserTravelPreferences savedPreferences =
+        _parsePreferences(data['preferences']) ?? preferences;
+    await _setCachedCurrentUserPreferences(
+      userId,
+      savedPreferences,
+      notify: notify,
+    );
+    await app_storage.LocalStorage.instance.remove(
+      _deferredStorageKeyFor(userId),
+    );
+  }
+
+  Future<void> deferCurrentUserOnboarding() async {
+    final String? userId = _currentUserId;
+    if (userId == null || hasCompletedCurrentUser) {
+      return;
+    }
+    await app_storage.LocalStorage.instance.setString(
+      _deferredStorageKeyFor(userId),
+      'true',
+    );
+    notifyListeners();
+  }
+
+  Future<void> clearCurrentUserPreferences() async {
+    final String? userId = _currentUserId;
+    if (userId == null) {
+      return;
+    }
+    if ((await _currentAccessToken()) != null) {
+      final Map<String, dynamic> data = await _invokeTravelPreferences(
+        const <String, dynamic>{'action': 'clearTravelPreferences'},
+      );
+      _asJsonMap(data);
+    }
+
+    await _setCachedCurrentUserPreferences(userId, null);
+  }
+
+  String _storageKeyFor(String userId) => '$_storageKeyPrefix$userId';
+
+  String _deferredStorageKeyFor(String userId) =>
+      '$_deferredStorageKeyPrefix$userId';
+
+  void refresh() {
+    if (_isReady) {
+      unawaited(_refreshCurrentUserPreferences());
+    }
+  }
+
+  void _handleAuthChanged() {
+    if (!_isReady) return;
+
+    _isHydratingCurrentUser = _currentUserId != null;
+    _currentPreferences = _readCachedCurrentUserPreferences();
+    notifyListeners();
+    unawaited(_refreshAfterAuthChange());
+  }
+
+  Future<void> _refreshAfterAuthChange() async {
+    try {
+      await _refreshCurrentUserPreferences();
+    } finally {
+      _isHydratingCurrentUser = false;
+      if (_isReady) {
+        notifyListeners();
+      }
+    }
+  }
+
+  Future<void> _refreshCurrentUserPreferences({bool notify = true}) async {
+    final String? userId = _currentUserId;
+    if (userId == null) {
+      _currentPreferences = null;
+      if (notify) {
+        notifyListeners();
+      }
+      return;
+    }
+
+    if ((await _currentAccessToken()) == null) {
+      _currentPreferences = _readCachedCurrentUserPreferences();
+      if (notify) {
+        notifyListeners();
+      }
+      return;
+    }
+
+    try {
+      final Map<String, dynamic> data = await _invokeTravelPreferences(
+        const <String, dynamic>{'action': 'getTravelPreferences'},
+      );
+
+      final UserTravelPreferences? remotePreferences = _parsePreferences(
+        data['preferences'],
+      );
+      if (remotePreferences == null && _currentPreferences != null) {
+        if (notify) {
+          notifyListeners();
+        }
+        return;
+      }
+      await _setCachedCurrentUserPreferences(
+        userId,
+        remotePreferences,
+        notify: notify,
+      );
+    } catch (_) {
+      _currentPreferences = _readCachedCurrentUserPreferences();
+      if (notify) {
+        notifyListeners();
+      }
+    }
+  }
+
+  UserTravelPreferences? _readCachedCurrentUserPreferences() {
+    final String? userId = _currentUserId;
+    if (!_isReady || userId == null) {
+      return null;
+    }
+
+    final String? raw = app_storage.LocalStorage.instance.getString(
+      _storageKeyFor(userId),
+    );
+    if (raw == null || raw.isEmpty) {
+      return null;
+    }
+
+    try {
+      return UserTravelPreferences.fromStorageValue(raw);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> _setCachedCurrentUserPreferences(
+    String userId,
+    UserTravelPreferences? preferences, {
+    bool notify = true,
+  }) async {
+    if (preferences == null) {
+      await app_storage.LocalStorage.instance.remove(_storageKeyFor(userId));
+    } else {
+      await app_storage.LocalStorage.instance.setString(
+        _storageKeyFor(userId),
+        preferences.toStorageValue(),
+      );
+    }
+
+    _currentPreferences = preferences;
+    if (notify) {
+      notifyListeners();
+    }
+  }
+
+  UserTravelPreferences? _parsePreferences(dynamic value) {
+    final Map<String, dynamic>? json = _asJsonMap(value);
+    if (json == null) {
+      return null;
+    }
+
+    try {
+      return UserTravelPreferences.fromJson(json);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Map<String, dynamic>? _asJsonMap(dynamic value) {
+    if (value is Map<String, dynamic>) {
+      return value;
+    }
+    if (value is Map) {
+      return value.map(
+        (dynamic key, dynamic innerValue) =>
+            MapEntry(key.toString(), innerValue),
+      );
+    }
+    return null;
+  }
+
+  @override
+  void dispose() {
+    if (_listensToAuth) {
+      AuthRepository.instance.removeListener(_handleAuthChanged);
+    }
+    super.dispose();
+  }
+}
